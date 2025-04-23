@@ -31,3 +31,7 @@ The arguments `-c` and either one of `-i` or `-m` are required.
 For example:
 
 `python -m app -m 16500 -c f82jike0jehnbvitk87et14fku`
+
+## License
+
+This project is licensed under the terms of the MIT license.
