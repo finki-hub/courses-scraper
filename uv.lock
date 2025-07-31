@@ -292,14 +292,14 @@ wheels = [
 
 [[package]]
 name = "types-beautifulsoup4"
-version = "4.12.0.20241020"
+version = "4.12.0.20250516"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "types-html5lib" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/45/ae/5a7571c649cdd9f3c07d16790467a4fe1191f12a3ad7eecd1097cb8b1d9f/types-beautifulsoup4-4.12.0.20241020.tar.gz", hash = "sha256:158370d08d0cd448bd11b132a50ff5279237a5d4b5837beba074de152a513059", size = 11682, upload-time = "2024-10-20T02:51:04.35Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6d/d1/32b410f6d65eda94d3dfb0b3d0ca151f12cb1dc4cef731dcf7cbfd8716ff/types_beautifulsoup4-4.12.0.20250516.tar.gz", hash = "sha256:aa19dd73b33b70d6296adf92da8ab8a0c945c507e6fb7d5db553415cc77b417e", size = 16628, upload-time = "2025-05-16T03:09:09.93Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7c/43/0f96cdf27d7da7dea729af3476b7be997205765209651a42a4e1895bab72/types_beautifulsoup4-4.12.0.20241020-py3-none-any.whl", hash = "sha256:c95e66ce15a4f5f0835f7fbc5cd886321ae8294f977c495424eaf4225307fd30", size = 12170, upload-time = "2024-10-20T02:51:03.47Z" },
+    { url = "https://files.pythonhosted.org/packages/7c/79/d84de200a80085b32f12c5820d4fd0addcbe7ba6dce8c1c9d8605e833c8e/types_beautifulsoup4-4.12.0.20250516-py3-none-any.whl", hash = "sha256:5923399d4a1ba9cc8f0096fe334cc732e130269541d66261bb42ab039c0376ee", size = 16879, upload-time = "2025-05-16T03:09:09.051Z" },
 ]
 
 [[package]]
