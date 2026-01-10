@@ -2,7 +2,7 @@ name: Linters
 
 on:
   push:
-    branches: [master, dev]
+    branches: [main, dev]
   pull_request:
     types: [opened, synchronize, reopened]
   workflow_dispatch:
