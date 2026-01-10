@@ -21,7 +21,7 @@ from app.constants import (
 )
 
 
-def get_profile_name(element: Tag, selectors: dict) -> str:
+def get_profile_name(element: Tag, selectors: dict[str, str]) -> str:
     name = element.select_one(selectors["name_selector"])
 
     if name is None:
@@ -30,7 +30,7 @@ def get_profile_name(element: Tag, selectors: dict) -> str:
     return name.text
 
 
-def get_profile_avatar(element: Tag, selectors: dict) -> str:
+def get_profile_avatar(element: Tag, selectors: dict[str, str]) -> str:
     avatar = element.select_one(selectors["avatar_selector"])
 
     if avatar is None or "defaultuserpic" in avatar.attrs["class"]:
@@ -39,7 +39,7 @@ def get_profile_avatar(element: Tag, selectors: dict) -> str:
     return avatar.attrs["src"]
 
 
-def get_profile_description(element: Tag, selectors: dict) -> str:
+def get_profile_description(element: Tag, selectors: dict[str, str]) -> str:
     description = element.select_one(selectors["description_selector"])
 
     if description is None:
@@ -48,13 +48,13 @@ def get_profile_description(element: Tag, selectors: dict) -> str:
     return description.text
 
 
-def get_profile_description_images(element: Tag, selectors: dict) -> str:
+def get_profile_description_images(element: Tag, selectors: dict[str, str]) -> str:
     images = element.select(selectors["description_images_selector"])
 
     return "\n".join([image.attrs["src"] for image in images])
 
 
-def get_profile_details(element: Tag, selectors: dict) -> dict[str, str]:
+def get_profile_details(element: Tag, selectors: dict[str, str]) -> dict[str, str]:
     attributes: dict[str, str] = {}
     details = element.select(selectors["details_selector"])
 
@@ -81,14 +81,14 @@ def get_profile_details(element: Tag, selectors: dict) -> dict[str, str]:
     return attributes
 
 
-def get_profile_courses(element: Tag, selectors: dict) -> str:
+def get_profile_courses(element: Tag, selectors: dict[str, str]) -> str:
     courses_tags = element.select(selectors["courses_selector"])
     courses = [li.text for li in courses_tags]
 
     return "\n".join(courses)
 
 
-def get_profile_last_access(element: Tag, selectors: dict) -> str:
+def get_profile_last_access(element: Tag, selectors: dict[str, str]) -> str:
     last_access = element.select_one(selectors["last_access_selector"])
 
     if last_access is None:
@@ -97,7 +97,7 @@ def get_profile_last_access(element: Tag, selectors: dict) -> str:
     return last_access.text.replace("\xa0", ";")
 
 
-def get_profile_attributes(element: Tag, selectors: dict) -> dict[str, str]:
+def get_profile_attributes(element: Tag, selectors: dict[str, str]) -> dict[str, str]:
     profile: dict[str, str] = {}
     sections = element.select(selectors["sections_selector"])
 
@@ -129,7 +129,7 @@ def get_profile(
     session: requests.Session,
     profile_id: int,
     base_url: str,
-    selectors: dict,
+    selectors: dict[str, str],
 ) -> dict[str, str]:
     profile_url = f"{base_url}/user/profile.php?id={profile_id}&showallcourses=1"
     response = session.get(profile_url)
@@ -153,7 +153,7 @@ def get_profile(
 def get_lambda(
     session: requests.Session,
     base_url: str,
-    selectors: dict,
+    selectors: dict[str, str],
 ) -> Callable[[int], dict[str, str]]:
     return lambda x: get_profile(session, x, base_url, selectors)
 
@@ -163,7 +163,7 @@ def get_profiles(
     profile_ids: range | list[int],
     threads: int,
     base_url: str,
-    selectors: dict,
+    selectors: dict[str, str],
 ) -> list[dict[str, str]]:
     with ThreadPoolExecutor(max_workers=threads) as executor:
         profiles = list(
