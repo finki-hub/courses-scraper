@@ -1,4 +1,4 @@
-# Courses Scraper
+# FINKI Hub / Courses Scraper
 
 Script for scraping all profiles from FCSE Courses (both instances) into CSV format.
 
