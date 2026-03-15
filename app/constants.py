@@ -1,4 +1,29 @@
-selectors_new = {
+from typing import TypedDict
+
+__all__ = [
+    "Selectors",
+    "base_urls",
+    "columns",
+    "fields",
+    "selectors_new",
+    "selectors_old",
+]
+
+
+class Selectors(TypedDict):
+    name_selector: str
+    description_selector: str
+    description_images_selector: str
+    courses_selector: str
+    last_access_selector: str
+    details_selector: str
+    sections_selector: str
+    interests_selector: str
+    attribute_selector: str
+    avatar_selector: str
+
+
+selectors_new: Selectors = {
     "name_selector": (
         "#page-header > div > div > div > div.d-flex.align-items-center > "
         "div.me-auto > div > div.page-header-headings > h1"
@@ -17,7 +42,7 @@ selectors_new = {
     "avatar_selector": ".page-header-image > img",
 }
 
-selectors_old = {
+selectors_old: Selectors = {
     "name_selector": (
         "#page-header > div > div > div > div.d-flex.align-items-center > "
         "div.mr-auto > div > div.page-header-headings > h1"
@@ -33,12 +58,12 @@ selectors_old = {
     "avatar_selector": ".page-header-image > img",
 }
 
-base_urls = {
+base_urls: dict[str, str] = {
     "new": "https://courses.finki.ukim.mk",
     "old": "https://oldcourses.finki.ukim.mk",
 }
 
-fields = {
+fields: dict[str, str] = {
     "email address": "Mail",
     "web page": "Web",
     "interests": "Interests",
@@ -53,7 +78,7 @@ fields = {
     "avatar": "Avatar",
 }
 
-columns = [
+columns: list[str] = [
     "ID",
     "Name",
     "Mail",
@@ -73,5 +98,3 @@ columns = [
     "ICQ",
     "AIM",
 ]
-
-http_ok = 200

@@ -1,7 +1,9 @@
 import argparse
+import logging
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from http import HTTPStatus
 from pathlib import Path
 
 import pandas as pd
@@ -12,16 +14,18 @@ from tqdm import tqdm
 from urllib3.util.retry import Retry
 
 from app.constants import (
+    Selectors,
     base_urls,
     columns,
     fields,
-    http_ok,
     selectors_new,
     selectors_old,
 )
 
+logger = logging.getLogger(__name__)
 
-def get_profile_name(element: Tag, selectors: dict[str, str]) -> str:
+
+def get_profile_name(element: Tag, selectors: Selectors) -> str:
     name = element.select_one(selectors["name_selector"])
 
     if name is None:
@@ -30,16 +34,24 @@ def get_profile_name(element: Tag, selectors: dict[str, str]) -> str:
     return name.text
 
 
-def get_profile_avatar(element: Tag, selectors: dict[str, str]) -> str:
+def get_profile_avatar(element: Tag, selectors: Selectors) -> str:
     avatar = element.select_one(selectors["avatar_selector"])
 
-    if avatar is None or "defaultuserpic" in avatar.attrs["class"]:
+    if avatar is None:
         return ""
 
-    return avatar.attrs["src"]
+    classes = avatar.get("class", [])
+    if isinstance(classes, list) and "defaultuserpic" in classes:
+        return ""
+
+    src = avatar.get("src")
+    if not isinstance(src, str):
+        return ""
+
+    return src
 
 
-def get_profile_description(element: Tag, selectors: dict[str, str]) -> str:
+def get_profile_description(element: Tag, selectors: Selectors) -> str:
     description = element.select_one(selectors["description_selector"])
 
     if description is None:
@@ -48,13 +60,13 @@ def get_profile_description(element: Tag, selectors: dict[str, str]) -> str:
     return description.text
 
 
-def get_profile_description_images(element: Tag, selectors: dict[str, str]) -> str:
+def get_profile_description_images(element: Tag, selectors: Selectors) -> str:
     images = element.select(selectors["description_images_selector"])
 
     return "\n".join([image.attrs["src"] for image in images])
 
 
-def get_profile_details(element: Tag, selectors: dict[str, str]) -> dict[str, str]:
+def get_profile_details(element: Tag, selectors: Selectors) -> dict[str, str]:
     attributes: dict[str, str] = {}
     details = element.select(selectors["details_selector"])
 
@@ -81,14 +93,14 @@ def get_profile_details(element: Tag, selectors: dict[str, str]) -> dict[str, st
     return attributes
 
 
-def get_profile_courses(element: Tag, selectors: dict[str, str]) -> str:
+def get_profile_courses(element: Tag, selectors: Selectors) -> str:
     courses_tags = element.select(selectors["courses_selector"])
     courses = [li.text for li in courses_tags]
 
     return "\n".join(courses)
 
 
-def get_profile_last_access(element: Tag, selectors: dict[str, str]) -> str:
+def get_profile_last_access(element: Tag, selectors: Selectors) -> str:
     last_access = element.select_one(selectors["last_access_selector"])
 
     if last_access is None:
@@ -97,7 +109,7 @@ def get_profile_last_access(element: Tag, selectors: dict[str, str]) -> str:
     return last_access.text.replace("\xa0", ";")
 
 
-def get_profile_attributes(element: Tag, selectors: dict[str, str]) -> dict[str, str]:
+def get_profile_attributes(element: Tag, selectors: Selectors) -> dict[str, str]:
     profile: dict[str, str] = {}
     sections = element.select(selectors["sections_selector"])
 
@@ -129,19 +141,20 @@ def get_profile(
     session: requests.Session,
     profile_id: int,
     base_url: str,
-    selectors: dict[str, str],
+    selectors: Selectors,
 ) -> dict[str, str]:
     profile_url = f"{base_url}/user/profile.php?id={profile_id}&showallcourses=1"
     response = session.get(profile_url)
 
-    if response.status_code != http_ok:
+    if response.status_code != HTTPStatus.OK:
         return {}
 
     soup = BeautifulSoup(response.text, "html.parser")
 
     try:
         profile = get_profile_attributes(soup, selectors)
-    except Exception:
+    except (AttributeError, KeyError, TypeError):
+        logger.warning("Failed to parse profile %d", profile_id, exc_info=True)
         return {}
 
     if profile:
@@ -153,7 +166,7 @@ def get_profile(
 def get_lambda(
     session: requests.Session,
     base_url: str,
-    selectors: dict[str, str],
+    selectors: Selectors,
 ) -> Callable[[int], dict[str, str]]:
     return lambda x: get_profile(session, x, base_url, selectors)
 
@@ -163,7 +176,7 @@ def get_profiles(
     profile_ids: range | list[int],
     threads: int,
     base_url: str,
-    selectors: dict[str, str],
+    selectors: Selectors,
 ) -> list[dict[str, str]]:
     with ThreadPoolExecutor(max_workers=threads) as executor:
         profiles = list(
@@ -173,7 +186,7 @@ def get_profiles(
             ),
         )
 
-    return list(filter(len, profiles))
+    return [p for p in profiles if p]
 
 
 def reorder_columns(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
@@ -332,6 +345,11 @@ def merge_profiles(df_old: pd.DataFrame, df_new: pd.DataFrame) -> pd.DataFrame:
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+    )
+
     args = parse_args()
     session_new = get_courses_session(args.c1)
     session_old = get_courses_session(args.c2)
@@ -352,14 +370,17 @@ def main() -> None:
     checkpoint_old = output_path / "checkpoint_old.csv"
 
     if checkpoint_new.exists() and checkpoint_old.exists():
-        print("Loading from checkpoints...")
+        logger.info("Loading from checkpoints...")
         df_new = pd.read_csv(checkpoint_new)
         df_old = pd.read_csv(checkpoint_old)
         scraped_ids = set(df_new["ID"].astype(str))
         remaining_ids = [pid for pid in profile_ids if str(pid) not in scraped_ids]
 
         if remaining_ids:
-            print(f"Resuming scraping for {len(remaining_ids)} remaining profiles...")
+            logger.info(
+                "Resuming scraping for %d remaining profiles...",
+                len(remaining_ids),
+            )
             profiles_new_additional = get_profiles(
                 session_new,
                 remaining_ids,
@@ -387,9 +408,9 @@ def main() -> None:
             df_new = pd.concat([df_new, df_new_additional], ignore_index=True)
             df_old = pd.concat([df_old, df_old_additional], ignore_index=True)
         else:
-            print("All profiles already scraped.")
+            logger.info("All profiles already scraped.")
     else:
-        print("Scraping new instance...")
+        logger.info("Scraping new instance...")
         profiles_new = get_profiles(
             session_new,
             profile_ids,
@@ -400,7 +421,7 @@ def main() -> None:
         df_new = reorder_columns(pd.DataFrame(profiles_new), columns)
         df_new.to_csv(checkpoint_new, index=False)
 
-        print("Scraping old instance...")
+        logger.info("Scraping old instance...")
         profiles_old = get_profiles(
             session_old,
             profile_ids,
@@ -422,8 +443,8 @@ def main() -> None:
     if checkpoint_old.exists():
         checkpoint_old.unlink()
 
-    print(df_merged.tail())
-    print(f"Finished in {time.time() - start} seconds")
+    logger.info("\n%s", df_merged.tail())
+    logger.info("Finished in %.2f seconds", time.time() - start)
 
 
 if __name__ == "__main__":
