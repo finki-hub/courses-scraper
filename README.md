@@ -10,7 +10,7 @@ Script for scraping all profiles from FCSE Courses (both instances) into CSV for
 
 ## Installation
 
-Python 3.12 or higher is required and `uv` is optional.
+Python 3.13 or higher is required and `uv` is optional.
 
 `python -m pip install -r requirements.txt`
 
