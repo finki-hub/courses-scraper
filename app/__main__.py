@@ -187,7 +187,11 @@ def get_profiles(
         }
 
         try:
-            for future in tqdm(as_completed(futures), total=len(futures)):
+            for future in tqdm(
+                as_completed(futures),
+                total=len(futures),
+                desc=base_url.rsplit("//", maxsplit=1)[-1],
+            ):
                 try:
                     result = future.result()
                 except Exception:
