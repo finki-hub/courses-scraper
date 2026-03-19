@@ -409,7 +409,10 @@ def merge_profiles(df_old: pd.DataFrame, df_new: pd.DataFrame) -> pd.DataFrame:
     )
 
     merged_df = df_old_renamed.merge(
-        df_new_renamed, on=COL_ID, how="outer", validate="many_to_many",
+        df_new_renamed,
+        on=COL_ID,
+        how="outer",
+        validate="many_to_many",
     )
 
     for field in (COL_NAME, COL_MAIL):
@@ -504,7 +507,10 @@ def _scrape_with_interrupt_handling(
             df_old = pd.concat([existing_old, df_old], ignore_index=True)
 
         _save_checkpoints(
-            df_new, df_old, config.checkpoint_new, config.checkpoint_old,
+            df_new,
+            df_old,
+            config.checkpoint_new,
+            config.checkpoint_old,
         )
         sys.exit(130)
 
@@ -537,9 +543,7 @@ def _resume_from_checkpoints(
     df_new = pd.read_csv(config.checkpoint_new)
     df_old = pd.read_csv(config.checkpoint_old)
     scraped_ids = set(df_new[COL_ID].astype(str)) | set(df_old[COL_ID].astype(str))
-    remaining_ids = [
-        pid for pid in profile_ids if str(pid) not in scraped_ids
-    ]
+    remaining_ids = [pid for pid in profile_ids if str(pid) not in scraped_ids]
 
     if not remaining_ids:
         logger.info("All profiles already scraped.")
@@ -609,7 +613,8 @@ def main() -> None:
     else:
         logger.info("Scraping both instances concurrently...")
         df_new, df_old = _scrape_with_interrupt_handling(
-            config, profile_ids,
+            config,
+            profile_ids,
         )
         df_new.to_csv(config.checkpoint_new, index=False)
         df_old.to_csv(config.checkpoint_old, index=False)
