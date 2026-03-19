@@ -1,6 +1,12 @@
 from typing import TypedDict
 
 __all__ = [
+    "COL_COURSES",
+    "COL_ID",
+    "COL_MAIL",
+    "COL_NAME",
+    "COL_PROFILE",
+    "COURSES_COUNT",
     "Selectors",
     "base_urls",
     "columns",
@@ -8,6 +14,14 @@ __all__ = [
     "selectors_new",
     "selectors_old",
 ]
+
+COL_ID = "ID"
+COL_NAME = "Name"
+COL_MAIL = "Mail"
+COL_COURSES = "Courses"
+COL_PROFILE = "Profile"
+
+COURSES_COUNT = "Courses Count"
 
 
 class Selectors(TypedDict):
@@ -23,39 +37,37 @@ class Selectors(TypedDict):
     avatar_selector: str
 
 
-selectors_new: Selectors = {
-    "name_selector": (
-        "#page-header > div > div > div > div.d-flex.align-items-center > "
-        "div.me-auto > div > div.page-header-headings > h1"
-    ),
+_base_selectors = {
     "description_selector": "#region-main > div > div > div.description",
     "description_images_selector": "#region-main > div > div > div.description img",
     "courses_selector": "ul > li > dl > dd > ul > li",
-    "last_access_selector": (
-        "#region-main > div > div > div.profile_tree > section:nth-child(4) > "
-        "div > ul > li > dl > dd"
-    ),
     "details_selector": "ul > li.contentnode",
     "sections_selector": "#region-main > div > div > div.profile_tree > section",
-    "interests_selector": "dl > dd > div > ul > li > a",
     "attribute_selector": "h3.lead",
     "avatar_selector": ".page-header-image > img",
 }
 
+selectors_new: Selectors = {
+    **_base_selectors,  # type: ignore[typeddict-item]
+    "name_selector": (
+        "#page-header > div > div > div > div.d-flex.align-items-center > "
+        "div.me-auto > div > div.page-header-headings > h1"
+    ),
+    "last_access_selector": (
+        "#region-main > div > div > div.profile_tree > section:nth-child(4) > "
+        "div > ul > li > dl > dd"
+    ),
+    "interests_selector": "dl > dd > div > ul > li > a",
+}
+
 selectors_old: Selectors = {
+    **_base_selectors,  # type: ignore[typeddict-item]
     "name_selector": (
         "#page-header > div > div > div > div.d-flex.align-items-center > "
         "div.mr-auto > div > div.page-header-headings > h1"
     ),
-    "description_selector": "#region-main > div > div > div.description",
-    "description_images_selector": "#region-main > div > div > div.description img",
-    "courses_selector": "ul > li > dl > dd > ul > li",
     "last_access_selector": "ul > li > dl > dd",
-    "details_selector": "ul > li.contentnode",
-    "sections_selector": "#region-main > div > div > div.profile_tree > section",
     "interests_selector": "li:not(.visibleifjs)",
-    "attribute_selector": "h3.lead",
-    "avatar_selector": ".page-header-image > img",
 }
 
 base_urls: dict[str, str] = {
@@ -64,7 +76,7 @@ base_urls: dict[str, str] = {
 }
 
 fields: dict[str, str] = {
-    "email address": "Mail",
+    "email address": COL_MAIL,
     "web page": "Web",
     "interests": "Interests",
     "icq number": "ICQ",
@@ -79,10 +91,10 @@ fields: dict[str, str] = {
 }
 
 columns: list[str] = [
-    "ID",
-    "Name",
-    "Mail",
-    "Courses",
+    COL_ID,
+    COL_NAME,
+    COL_MAIL,
+    COL_COURSES,
     "Last Access",
     "Avatar",
     "Description",
