@@ -588,7 +588,7 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
-    logging.getLogger("urllib3.util.retry").setLevel(logging.ERROR)
+    logging.getLogger("urllib3").setLevel(logging.ERROR)
 
     args = parse_args()
     start = time.time()
