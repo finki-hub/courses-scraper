@@ -5,7 +5,7 @@ description = "Courses Scraper"
 readme = "README.md"
 requires-python = "~=3.13.0"
 dependencies = [
-    "requests>=2.32.5,<3",
+    "requests>=2.34.0,<3",
     "beautifulsoup4>=4.14.3,<5",
     "lxml>=6.0.4,<7",
     "pandas>=2.3.3,<4",
