@@ -15,7 +15,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "mypy>=2.1.0,<3",
-    "ruff>=0.15.15,<1",
+    "ruff>=0.15.16,<1",
     "lxml-stubs>=0.5.1",
     "pandas-stubs>=3.0.3.260530,<4",
     "types-tqdm>=4.67.3.20260518,<5",
