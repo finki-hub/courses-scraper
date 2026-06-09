@@ -9,7 +9,7 @@ dependencies = [
     "beautifulsoup4>=4.15.0,<5",
     "lxml>=6.1.1,<7",
     "pandas>=3.0.3,<4",
-    "tqdm>=4.68.1,<5",
+    "tqdm>=4.68.2,<5",
 ]
 
 [dependency-groups]
