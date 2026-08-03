@@ -128,7 +128,7 @@ dev = [
     { name = "ruff", specifier = ">=0.16.0,<1" },
     { name = "types-beautifulsoup4", specifier = ">=4.12.0.20250516,<5" },
     { name = "types-requests", specifier = ">=2.33.0.20260712,<3" },
-    { name = "types-tqdm", specifier = ">=4.70.0.20260730,<5" },
+    { name = "types-tqdm", specifier = ">=4.70.0.20260731,<5" },
 ]
 
 [[package]]
@@ -420,11 +420,11 @@ wheels = [
 
 [[package]]
 name = "types-tqdm"
-version = "4.70.0.20260730"
+version = "4.70.0.20260731"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/84/3c/a7aa7a768d898e4a861d81466477a3d04ff23f687a9b2e3f0f8086e3e6bf/types_tqdm-4.70.0.20260730.tar.gz", hash = "sha256:16532cb590418311647bcc1cd1c2b93b60c84267505c4acad288471a824316a6", size = 19020, upload-time = "2026-07-30T04:44:25.372Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/11/00/8992629b9ce59e80c8ac486f80c691d2ff4e8aba8c4f5afe02fef72c05eb/types_tqdm-4.70.0.20260731.tar.gz", hash = "sha256:6b02430954866dbb87b4ada1a16f396775508d0cafbe4c694673d65645e1984e", size = 19061, upload-time = "2026-07-31T05:22:09.618Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/69/15/733e9fdc19c01d3412f9f478082de7d919ad2e13c4cfa69e838f28a60353/types_tqdm-4.70.0.20260730-py3-none-any.whl", hash = "sha256:72b96f8188276f28411c8e29dcb1227039286a568fa440d5e74044a69f9cc124", size = 25132, upload-time = "2026-07-30T04:44:24.446Z" },
+    { url = "https://files.pythonhosted.org/packages/37/f3/2b6b01a9c815411566b5c5dba03bb537d8fbf374f76289bacbd2c16204e6/types_tqdm-4.70.0.20260731-py3-none-any.whl", hash = "sha256:d2a8b4ced62afecc84b89d75e40397c22a228ca273eb778899713981e9b323dc", size = 25137, upload-time = "2026-07-31T05:22:08.555Z" },
 ]
 
 [[package]]
