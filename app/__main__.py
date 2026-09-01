@@ -411,7 +411,7 @@ def _resolve_profile_ids(
     args: argparse.Namespace,
 ) -> range | list[int] | None:
     if args.i is not None:
-        return list[int](args.i)
+        return list(dict.fromkeys(args.i))
     if args.m is not None:
         return range(1, args.m + 1)
     return None
@@ -427,13 +427,22 @@ def _remaining_profile_ids(
     ]
 
 
+def _load_checkpoint(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame(columns=columns, dtype="string")
+    return reorder_columns(
+        pd.read_csv(path, dtype="string", keep_default_na=False),
+        columns,
+    )
+
+
 def _resume_from_checkpoints(
     config: ScrapeConfig,
     profile_ids: range | list[int],
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     logger.info("Loading from checkpoints...")
-    df_new = pd.read_csv(config.checkpoint_new, dtype={COL_ID: "string"})
-    df_old = pd.read_csv(config.checkpoint_old, dtype={COL_ID: "string"})
+    df_new = _load_checkpoint(config.checkpoint_new)
+    df_old = _load_checkpoint(config.checkpoint_old)
     remaining_new = _remaining_profile_ids(profile_ids, df_new)
     remaining_old = _remaining_profile_ids(profile_ids, df_old)
 
@@ -499,7 +508,7 @@ def main() -> None:
         checkpoint_old=output_path / "checkpoint_old.csv",
     )
 
-    if config.checkpoint_new.exists() and config.checkpoint_old.exists():
+    if config.checkpoint_new.exists() or config.checkpoint_old.exists():
         df_new, df_old = _resume_from_checkpoints(config, profile_ids)
     else:
         logger.info("Scraping both instances concurrently...")
