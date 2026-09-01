@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Final, Literal
 
 import pandas as pd
 
@@ -19,6 +19,11 @@ _ID_OLD = f"{COL_ID}_old"
 _ID_NEW = f"{COL_ID}_new"
 _PROFILE_OLD = f"{COL_PROFILE}_old"
 _PROFILE_NEW = f"{COL_PROFILE}_new"
+_EMAIL_PATTERN: Final = (
+    r"[a-z0-9!#$%&'*+/=?^_`{|}~-]+"
+    r"(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*"
+    r"@(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}"
+)
 
 
 def _series(df: pd.DataFrame, column: str) -> pd.Series:
@@ -48,8 +53,9 @@ def _normalize_side(
     normalized = df.rename(columns={column: f"{column}_{side}" for column in df})
     normalized[f"{COL_ID}_{side}"] = ids
     emails = normalized[f"{COL_MAIL}_{side}"].fillna("").astype(str).str.strip()
-    normalized[_EMAIL_KEY] = emails.str.casefold().where(
-        emails.str.fullmatch(r"[^@\s]+@[^@\s]+", na=False),
+    normalized_emails = emails.str.casefold()
+    normalized[_EMAIL_KEY] = normalized_emails.where(
+        normalized_emails.str.fullmatch(_EMAIL_PATTERN, na=False),
         "",
     )
     return normalized
