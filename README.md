@@ -36,11 +36,20 @@ For example:
 
 ## Output
 
-The output CSV file will contain all profile fields from both instances with suffixes:
+The output CSV matches profiles by a normalized email address only when that address
+is unique in both instances. Moodle user IDs are local to each instance and are not
+used as a cross-instance identity.
 
-- `_old` for fields from the old instance (e.g., `Name_old`, `Description_old`)
-- `_new` for fields from the new instance (e.g., `Name_new`, `Description_new`)
-- `ID` remains unsuffixed as it's the common key
+The CSV contains:
+
+- `Name`, `Mail`, and `Courses` combined for confirmed matches
+- `_old` and `_new` fields for instance-specific values such as `Description_old`
+  and `Description_new`
+- `ID_old` and `ID_new` for the instance-local Moodle user IDs
+- `Profile_old` and `Profile_new` for links using the corresponding instance ID
+
+Profiles with a missing, malformed, one-sided, or duplicated email remain separate
+rows. Names are never used as identity keys because they are not guaranteed unique.
 
 ## License
 
