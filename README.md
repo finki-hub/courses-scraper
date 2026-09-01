@@ -30,6 +30,12 @@ Arguments:
 
 The arguments `-c1`, `-c2`, and either one of `-i` or `-m` are required.
 
+Before scraping, each instance must return an authenticated profile without a
+redirect. During scraping, three transport failures on one instance abort the
+run rather than producing an empty successful export. A batch smaller than three
+also aborts when every request fails at the transport boundary. HTTP responses
+that contain no exportable profile remain ordinary empty results.
+
 For example:
 
 `python -m app -m 16500 -c1 f82jike0jehnbvitk87et14fku -c2 a93klnp1kfiocdwml98fu25glv`
