@@ -1,7 +1,7 @@
-import argparse
 import logging
 import sys
 import time
+from collections.abc import Sequence
 from concurrent.futures import (
     CancelledError,
     Future,
@@ -20,6 +20,7 @@ import pandas as pd
 import requests
 from tqdm import tqdm
 
+from app.cli import parse_cli
 from app.constants import (
     COL_ID,
     base_urls,
@@ -61,7 +62,7 @@ class _WorkerSession(local):
 
 def get_profiles(
     config: InstanceHttpConfig,
-    profile_ids: range | list[int],
+    profile_ids: Sequence[int],
 ) -> list[dict[str, str]]:
     profiles: list[dict[str, str]] = []
     profile_ids = list(profile_ids)
@@ -161,33 +162,6 @@ def reorder_columns(df: pd.DataFrame, col_order: list[str]) -> pd.DataFrame:
     return df.loc[:, col_order].copy()
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Scrape Courses profiles from two instances",
-    )
-
-    parser.add_argument(
-        "-c1",
-        type=str,
-        required=True,
-        help="New Courses instance session cookie",
-    )
-    parser.add_argument(
-        "-c2",
-        type=str,
-        required=True,
-        help="Old Courses instance session cookie",
-    )
-    parser.add_argument("-o", type=str, default="profiles.csv", help="Output file")
-    parser.add_argument("-t", type=int, default=10, help="How many threads to use")
-
-    id_group = parser.add_mutually_exclusive_group(required=True)
-    id_group.add_argument("-i", type=int, nargs="+", help="Profile IDs to scrape")
-    id_group.add_argument("-m", type=int, help="Highest ID")
-
-    return parser.parse_args()
-
-
 def _save_checkpoints(
     df_new: pd.DataFrame,
     df_old: pd.DataFrame,
@@ -226,8 +200,8 @@ def _salvage_futures(
 
 def _scrape_with_interrupt_handling(
     config: ScrapeConfig,
-    profile_ids_new: range | list[int],
-    profile_ids_old: range | list[int],
+    profile_ids_new: Sequence[int],
+    profile_ids_old: Sequence[int],
     existing_new: pd.DataFrame | None = None,
     existing_old: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -284,18 +258,8 @@ def _scrape_with_interrupt_handling(
     return df_new, df_old
 
 
-def _resolve_profile_ids(
-    args: argparse.Namespace,
-) -> range | list[int] | None:
-    if args.i is not None:
-        return list(dict.fromkeys(args.i))
-    if args.m is not None:
-        return range(1, args.m + 1)
-    return None
-
-
 def _remaining_profile_ids(
-    profile_ids: range | list[int],
+    profile_ids: Sequence[int],
     checkpoint: pd.DataFrame,
 ) -> list[int]:
     scraped_ids = set(checkpoint[COL_ID].astype(str))
@@ -315,7 +279,7 @@ def _load_checkpoint(path: Path) -> pd.DataFrame:
 
 def _resume_from_checkpoints(
     config: ScrapeConfig,
-    profile_ids: range | list[int],
+    profile_ids: Sequence[int],
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     logger.info("Loading from checkpoints...")
     df_new = _load_checkpoint(config.checkpoint_new)
@@ -367,28 +331,25 @@ def main() -> None:
     )
     logging.getLogger("urllib3").setLevel(logging.ERROR)
 
-    args = parse_args()
+    cli_config = parse_cli()
     start = time.time()
+    profile_ids = cli_config.profile_ids
 
-    profile_ids = _resolve_profile_ids(args)
-    if profile_ids is None:
-        return
-
-    output_path = Path("output")
+    output_path = cli_config.output_file.parent
     output_path.mkdir(exist_ok=True, parents=True)
 
     config = ScrapeConfig(
         http_new=InstanceHttpConfig(
             base_url=base_urls["new"],
-            cookie=args.c1,
+            cookie=cli_config.cookie_new,
             selectors=selectors_new,
-            threads=args.t,
+            threads=cli_config.threads,
         ),
         http_old=InstanceHttpConfig(
             base_url=base_urls["old"],
-            cookie=args.c2,
+            cookie=cli_config.cookie_old,
             selectors=selectors_old,
-            threads=args.t,
+            threads=cli_config.threads,
         ),
         checkpoint_new=output_path / "checkpoint_new.csv",
         checkpoint_old=output_path / "checkpoint_old.csv",
@@ -410,7 +371,7 @@ def main() -> None:
             config.checkpoint_old,
         )
 
-    _finalize_output(df_old, df_new, output_path, args.o, config)
+    _finalize_output(df_old, df_new, output_path, cli_config.output_file.name, config)
     logger.info("Finished in %.2f seconds", time.time() - start)
 
 

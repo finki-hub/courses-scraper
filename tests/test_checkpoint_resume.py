@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -8,6 +7,7 @@ import pandas as pd
 import pytest
 
 import app.__main__ as scraper
+from app.cli import CliConfig
 from app.constants import (
     COL_ID,
     base_urls,
@@ -35,17 +35,6 @@ def _config(tmp_path: Path) -> scraper.ScrapeConfig:
         checkpoint_new=tmp_path / "checkpoint_new.csv",
         checkpoint_old=tmp_path / "checkpoint_old.csv",
     )
-
-
-def test_resolve_profile_ids_deduplicates_explicit_ids() -> None:
-    # Given repeated explicit profile IDs.
-    args = argparse.Namespace(i=[2, 2, 1, 2], m=None)
-
-    # When the CLI profile IDs are resolved.
-    profile_ids = scraper._resolve_profile_ids(args)
-
-    # Then each ID is retained once in its original order.
-    assert profile_ids == [2, 1]
 
 
 def test_remaining_profile_ids_are_instance_specific() -> None:
@@ -97,15 +86,14 @@ def test_main_resumes_when_only_one_checkpoint_exists(
     pd.DataFrame([row]).to_csv(output / "checkpoint_new.csv", index=False)
     monkeypatch.setattr(
         scraper,
-        "parse_args",
+        "parse_cli",
         Mock(
-            return_value=argparse.Namespace(
-                c1="x",
-                c2="y",
-                o="out.csv",
-                t=1,
-                i=[1, 2],
-                m=None,
+            return_value=CliConfig(
+                cookie_new="x",
+                cookie_old="y",
+                output_file=Path("output/out.csv"),
+                threads=1,
+                profile_ids=(1, 2),
             ),
         ),
     )
@@ -121,3 +109,7 @@ def test_main_resumes_when_only_one_checkpoint_exists(
     assert scrape.call_args.args[2] == [1, 2]
     assert scrape.call_args.kwargs["existing_new"].loc[0, COL_ID] == "1"
     assert scrape.call_args.kwargs["existing_old"].empty
+    runtime_config = scrape.call_args.args[0]
+    assert runtime_config.http_new.cookie == "x"
+    assert runtime_config.http_old.cookie == "y"
+    assert runtime_config.http_new.threads == 1
