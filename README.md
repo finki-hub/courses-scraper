@@ -6,7 +6,7 @@ Script for scraping all profiles from FCSE Courses (both instances) into CSV for
 
 1. Install `uv`
 2. Get your Courses `MOODLESESSION` cookies for both instances
-3. Run `uv run python -m app -m 17000 -c1 <NEW_COOKIE> -c2 <OLD_COOKIE>`
+3. Run `uv run python -m app -m 17000` and enter both cookies at the hidden prompts
 
 ## Installation
 
@@ -21,14 +21,34 @@ Python 3.13 or higher is required and `uv` is optional.
 Arguments:
 
 1. `-h` - shows help message
-2. `-c1` - set `MoodleSession` cookie for the new Courses instance at `https://courses.finki.ukim.mk` (required)
-3. `-c2` - set `MoodleSession` cookie for the old Courses instance at `https://oldcourses.finki.ukim.mk` (required)
+2. `-c1` - set `MoodleSession` cookie for the new Courses instance at `https://courses.finki.ukim.mk`
+3. `-c2` - set `MoodleSession` cookie for the old Courses instance at `https://oldcourses.finki.ukim.mk`
 4. `-o` - output file name (default: profiles.csv)
 5. `-t` - number of threads to use (default: 10)
 6. `-i` - profile IDs to be scraped
 7. `-m` - upper limit of profile IDs to be scraped
 
-The arguments `-c1`, `-c2`, and either one of `-i` or `-m` are required.
+Either `-i` or `-m` is required. Thread counts, maximum IDs, and every explicit
+profile ID must be positive. The `-o` value must be a plain filename; output is
+always written under `output/`.
+
+For each instance, the cookie source precedence is:
+
+1. Explicit `-c1` or `-c2` flag
+2. `COURSES_COOKIE_NEW` or `COURSES_COOKIE_OLD` environment variable
+3. Hidden terminal prompt
+
+Omit cookie flags to keep secrets out of command history. For example, set the
+environment variables before running:
+
+```text
+COURSES_COOKIE_NEW=<NEW_COOKIE>
+COURSES_COOKIE_OLD=<OLD_COOKIE>
+```
+
+If neither the corresponding flag nor environment variable is present, the
+script prompts without echoing the cookie. Cookie values must be nonblank and
+cannot contain control characters, whitespace, semicolons, or commas.
 
 Before scraping, each instance must return an authenticated profile without a
 redirect. During scraping, three transport failures on one instance abort the
@@ -38,7 +58,7 @@ that contain no exportable profile remain ordinary empty results.
 
 For example:
 
-`python -m app -m 16500 -c1 f82jike0jehnbvitk87et14fku -c2 a93klnp1kfiocdwml98fu25glv`
+`python -m app -m 16500`
 
 ## Output
 
