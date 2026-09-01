@@ -25,10 +25,7 @@ from urllib3.util.retry import Retry
 from app.constants import (
     COL_COURSES,
     COL_ID,
-    COL_MAIL,
     COL_NAME,
-    COL_PROFILE,
-    COURSES_COUNT,
     Selectors,
     base_urls,
     columns,
@@ -36,6 +33,7 @@ from app.constants import (
     selectors_new,
     selectors_old,
 )
+from app.profile_merge import merge_profiles
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +62,7 @@ def get_profile_avatar(element: Tag, selectors: Selectors) -> str:
     if avatar is None:
         return ""
 
-    classes = avatar.get("class", [])
+    classes = avatar.get("class")
     if isinstance(classes, list) and "defaultuserpic" in classes:
         return ""
 
@@ -261,7 +259,7 @@ def reorder_columns(df: pd.DataFrame, col_order: list[str]) -> pd.DataFrame:
         if column not in df.columns:
             df[column] = ""
 
-    return df[col_order]
+    return df.loc[:, col_order].copy()
 
 
 def parse_args() -> argparse.Namespace:
@@ -311,123 +309,6 @@ def get_courses_session(cookie: str, threads: int = 10) -> requests.Session:
     return session
 
 
-def _merge_field(
-    merged_df: pd.DataFrame,
-    field: str,
-) -> pd.DataFrame:
-    col_x = f"{field}_x"
-    col_y = f"{field}_y"
-
-    if col_x in merged_df.columns and col_y in merged_df.columns:
-        merged_df[field] = merged_df[col_y].fillna(merged_df[col_x])
-        merged_df = merged_df.drop(columns=[col_x, col_y])
-    elif col_x in merged_df.columns:
-        merged_df = merged_df.rename(columns={col_x: field})
-    elif col_y in merged_df.columns:
-        merged_df = merged_df.rename(columns={col_y: field})
-
-    return merged_df
-
-
-def _parse_courses(raw: str) -> list[str]:
-    if pd.notna(raw) and raw:
-        return [c.strip() for c in raw.split("\n") if c.strip()]
-    return []
-
-
-def _merge_courses(courses_old: str, courses_new: str) -> str:
-    combined = _parse_courses(courses_new) + _parse_courses(courses_old)
-    return "\n".join(dict.fromkeys(combined)) if combined else ""
-
-
-def _merge_courses_column(merged_df: pd.DataFrame) -> pd.DataFrame:
-    col_x = f"{COL_COURSES}_x"
-    col_y = f"{COL_COURSES}_y"
-
-    if col_x in merged_df.columns and col_y in merged_df.columns:
-        merged_df[COL_COURSES] = [
-            _merge_courses(x, y)
-            for x, y in zip(merged_df[col_x], merged_df[col_y], strict=True)
-        ]
-        return merged_df.drop(columns=[col_x, col_y])
-
-    return _merge_field(merged_df, COL_COURSES)
-
-
-def _add_courses_count(merged_df: pd.DataFrame) -> pd.DataFrame:
-    if COL_COURSES not in merged_df.columns:
-        return merged_df
-
-    courses_series = merged_df[COL_COURSES].fillna("")
-    merged_df[COURSES_COUNT] = courses_series.apply(
-        lambda c: len([p for p in c.split("\n") if p.strip()]) if c else 0,
-    )
-
-    return merged_df
-
-
-def _build_column_order(
-    merged_df: pd.DataFrame,
-    single_fields: list[str],
-) -> list[str]:
-    base_columns = sorted(
-        {
-            col.replace("_old", "").replace("_new", "")
-            for col in merged_df.columns
-            if col not in [*single_fields, COL_PROFILE, COURSES_COUNT]
-        },
-    )
-
-    new_order = [COL_ID]
-    new_order.extend(
-        col_name
-        for col_name in (COL_PROFILE, COL_NAME, COL_MAIL, COL_COURSES, COURSES_COUNT)
-        if col_name in merged_df.columns
-    )
-
-    for base_col in base_columns:
-        if f"{base_col}_new" in merged_df.columns:
-            new_order.append(f"{base_col}_new")
-        if f"{base_col}_old" in merged_df.columns:
-            new_order.append(f"{base_col}_old")
-
-    return new_order
-
-
-def merge_profiles(df_old: pd.DataFrame, df_new: pd.DataFrame) -> pd.DataFrame:
-    single_fields = [COL_ID, COL_NAME, COL_MAIL, COL_COURSES]
-
-    df_old_renamed = df_old.rename(
-        columns={
-            col: f"{col}_old" for col in df_old.columns if col not in single_fields
-        },
-    )
-    df_new_renamed = df_new.rename(
-        columns={
-            col: f"{col}_new" for col in df_new.columns if col not in single_fields
-        },
-    )
-
-    merged_df = df_old_renamed.merge(
-        df_new_renamed,
-        on=COL_ID,
-        how="outer",
-        validate="many_to_many",
-    )
-
-    for field in (COL_NAME, COL_MAIL):
-        merged_df = _merge_field(merged_df, field)
-
-    merged_df = _merge_courses_column(merged_df)
-    merged_df = _add_courses_count(merged_df)
-
-    merged_df[COL_PROFILE] = (
-        base_urls["new"] + "/user/profile.php?id=" + merged_df[COL_ID].astype(str)
-    )
-
-    return merged_df[_build_column_order(merged_df, single_fields)]
-
-
 def _save_checkpoints(
     df_new: pd.DataFrame,
     df_old: pd.DataFrame,
@@ -466,7 +347,8 @@ def _salvage_futures(
 
 def _scrape_with_interrupt_handling(
     config: ScrapeConfig,
-    profile_ids: range | list[int],
+    profile_ids_new: range | list[int],
+    profile_ids_old: range | list[int],
     existing_new: pd.DataFrame | None = None,
     existing_old: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -478,7 +360,7 @@ def _scrape_with_interrupt_handling(
             future_new = site_executor.submit(
                 get_profiles,
                 config.session_new,
-                profile_ids,
+                profile_ids_new,
                 config.threads,
                 base_urls["new"],
                 selectors_new,
@@ -486,7 +368,7 @@ def _scrape_with_interrupt_handling(
             future_old = site_executor.submit(
                 get_profiles,
                 config.session_old,
-                profile_ids,
+                profile_ids_old,
                 config.threads,
                 base_urls["old"],
                 selectors_old,
@@ -535,28 +417,40 @@ def _resolve_profile_ids(
     return None
 
 
+def _remaining_profile_ids(
+    profile_ids: range | list[int],
+    checkpoint: pd.DataFrame,
+) -> list[int]:
+    scraped_ids = set(checkpoint[COL_ID].astype(str))
+    return [
+        profile_id for profile_id in profile_ids if str(profile_id) not in scraped_ids
+    ]
+
+
 def _resume_from_checkpoints(
     config: ScrapeConfig,
     profile_ids: range | list[int],
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     logger.info("Loading from checkpoints...")
-    df_new = pd.read_csv(config.checkpoint_new)
-    df_old = pd.read_csv(config.checkpoint_old)
-    scraped_ids = set(df_new[COL_ID].astype(str)) | set(df_old[COL_ID].astype(str))
-    remaining_ids = [pid for pid in profile_ids if str(pid) not in scraped_ids]
+    df_new = pd.read_csv(config.checkpoint_new, dtype={COL_ID: "string"})
+    df_old = pd.read_csv(config.checkpoint_old, dtype={COL_ID: "string"})
+    remaining_new = _remaining_profile_ids(profile_ids, df_new)
+    remaining_old = _remaining_profile_ids(profile_ids, df_old)
 
-    if not remaining_ids:
+    if not remaining_new and not remaining_old:
         logger.info("All profiles already scraped.")
         return df_new, df_old
 
     logger.info(
-        "Resuming scraping for %d remaining profiles...",
-        len(remaining_ids),
+        "Resuming scraping for %d new and %d old remaining profiles...",
+        len(remaining_new),
+        len(remaining_old),
     )
 
     return _scrape_with_interrupt_handling(
         config,
-        remaining_ids,
+        remaining_new,
+        remaining_old,
         existing_new=df_new,
         existing_old=df_old,
     )
@@ -570,9 +464,6 @@ def _finalize_output(
     config: ScrapeConfig,
 ) -> None:
     df_merged = merge_profiles(df_old, df_new)
-    df_merged[COL_ID] = df_merged[COL_ID].astype(int)
-    df_merged = df_merged.sort_values(COL_ID)
-    df_merged[COL_ID] = df_merged[COL_ID].astype(str)
     df_merged.to_csv(output_path / output_file, index=False)
 
     if config.checkpoint_new.exists():
@@ -614,6 +505,7 @@ def main() -> None:
         logger.info("Scraping both instances concurrently...")
         df_new, df_old = _scrape_with_interrupt_handling(
             config,
+            profile_ids,
             profile_ids,
         )
         df_new.to_csv(config.checkpoint_new, index=False)
