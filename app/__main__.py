@@ -17,24 +17,21 @@ from pathlib import Path
 
 import pandas as pd
 import requests
-from bs4 import BeautifulSoup, Tag
 from requests.adapters import HTTPAdapter
 from tqdm import tqdm
 from urllib3.util.retry import Retry
 
 from app.constants import (
-    COL_COURSES,
     COL_ID,
-    COL_NAME,
     Selectors,
     base_urls,
     columns,
-    fields,
     selectors_new,
     selectors_old,
 )
 from app.csv_io import write_csv_atomically
 from app.profile_merge import merge_profiles
+from app.profile_parser import parse_profile_html
 
 logger = logging.getLogger(__name__)
 
@@ -46,120 +43,6 @@ class ScrapeConfig:
     threads: int
     checkpoint_new: Path
     checkpoint_old: Path
-
-
-def get_profile_name(element: Tag, selectors: Selectors) -> str:
-    name = element.select_one(selectors["name_selector"])
-
-    if name is None:
-        return ""
-
-    return name.text.strip()
-
-
-def get_profile_avatar(element: Tag, selectors: Selectors) -> str:
-    avatar = element.select_one(selectors["avatar_selector"])
-
-    if avatar is None:
-        return ""
-
-    classes = avatar.get("class")
-    if isinstance(classes, list) and "defaultuserpic" in classes:
-        return ""
-
-    src = avatar.get("src")
-    if not isinstance(src, str):
-        return ""
-
-    return src
-
-
-def get_profile_description(element: Tag, selectors: Selectors) -> str:
-    description = element.select_one(selectors["description_selector"])
-
-    if description is None:
-        return ""
-
-    return description.text.strip()
-
-
-def get_profile_description_images(element: Tag, selectors: Selectors) -> str:
-    images = element.select(selectors["description_images_selector"])
-
-    return "\n".join(
-        src for image in images if (src := image.get("src")) and isinstance(src, str)
-    )
-
-
-def get_profile_details(element: Tag, selectors: Selectors) -> dict[str, str]:
-    attributes: dict[str, str] = {}
-    details = element.select(selectors["details_selector"])
-
-    for detail in details:
-        field_element = detail.dt
-        value_element = detail.dd
-
-        if field_element is None or value_element is None:
-            continue
-
-        field = field_element.text.strip().lower()
-
-        if field in fields:
-            value = value_element.text.strip()
-
-            if field == "interests":
-                interests = value_element.select(selectors["interests_selector"])
-                value = "\n".join(interest.text.strip() for interest in interests)
-            elif field == "email address":
-                value = value.replace(" (Visible to other course participants)", "")
-
-            attributes[fields[field]] = value
-
-    return attributes
-
-
-def get_profile_courses(element: Tag, selectors: Selectors) -> str:
-    courses_tags = element.select(selectors["courses_selector"])
-    courses = [li.text for li in courses_tags]
-
-    return "\n".join(courses)
-
-
-def get_profile_last_access(element: Tag, selectors: Selectors) -> str:
-    last_access = element.select_one(selectors["last_access_selector"])
-
-    if last_access is None:
-        return ""
-
-    return last_access.text.replace("\xa0", ";")
-
-
-def get_profile_attributes(element: Tag, selectors: Selectors) -> dict[str, str]:
-    profile: dict[str, str] = {}
-    sections = element.select(selectors["sections_selector"])
-
-    if len(sections) == 0:
-        return {}
-
-    profile[COL_NAME] = get_profile_name(element, selectors)
-    profile["Description"] = get_profile_description(element, selectors)
-    profile["Images"] = get_profile_description_images(element, selectors)
-    profile["Avatar"] = get_profile_avatar(element, selectors)
-
-    for section in sections:
-        attribute = section.select_one(selectors["attribute_selector"])
-
-        if attribute is None:
-            continue
-
-        if attribute.text == "User details":
-            profile |= get_profile_details(section, selectors)
-        elif attribute.text == "Course details":
-            profile[COL_COURSES] = get_profile_courses(section, selectors)
-        elif attribute.text == "Login activity":
-            profile["Last Access"] = get_profile_last_access(section, selectors)
-
-    return profile
 
 
 def get_profile(
@@ -179,10 +62,8 @@ def get_profile(
     if response.status_code != HTTPStatus.OK:
         return {}
 
-    soup = BeautifulSoup(response.text, "lxml")
-
     try:
-        profile = get_profile_attributes(soup, selectors)
+        profile = parse_profile_html(response.text, selectors)
     except (AttributeError, KeyError, TypeError):
         logger.warning("Failed to parse profile %d", profile_id, exc_info=True)
         return {}
