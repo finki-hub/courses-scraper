@@ -21,4 +21,3 @@ jobs:
 
   pytest:
     uses: finki-hub/.github/.github/workflows/pytest.yaml@main
-    secrets: inherit
