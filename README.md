@@ -42,7 +42,7 @@ used as a cross-instance identity.
 
 The CSV contains:
 
-- `Name`, `Mail`, and `Courses` combined for confirmed matches
+- `Name`, `Mail`, and `Courses` combined for unique-email matches
 - `_old` and `_new` fields for instance-specific values such as `Description_old`
   and `Description_new`
 - `ID_old` and `ID_new` for the instance-local Moodle user IDs
