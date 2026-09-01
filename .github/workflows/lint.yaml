@@ -18,3 +18,7 @@ jobs:
   mypy:
     uses: finki-hub/.github/.github/workflows/mypy.yaml@main
     secrets: inherit
+
+  pytest:
+    uses: finki-hub/.github/.github/workflows/pytest.yaml@main
+    secrets: inherit
