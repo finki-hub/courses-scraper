@@ -6,17 +6,32 @@ from unittest.mock import Mock
 
 import pandas as pd
 import pytest
-import requests
 
 import app.__main__ as scraper
-from app.constants import COL_ID, columns
+from app.constants import (
+    COL_ID,
+    base_urls,
+    columns,
+    selectors_new,
+    selectors_old,
+)
+from app.http import InstanceHttpConfig
 
 
 def _config(tmp_path: Path) -> scraper.ScrapeConfig:
     return scraper.ScrapeConfig(
-        session_new=requests.Session(),
-        session_old=requests.Session(),
-        threads=1,
+        http_new=InstanceHttpConfig(
+            base_url=base_urls["new"],
+            cookie="new-cookie",
+            selectors=selectors_new,
+            threads=1,
+        ),
+        http_old=InstanceHttpConfig(
+            base_url=base_urls["old"],
+            cookie="old-cookie",
+            selectors=selectors_old,
+            threads=1,
+        ),
         checkpoint_new=tmp_path / "checkpoint_new.csv",
         checkpoint_old=tmp_path / "checkpoint_old.csv",
     )
@@ -93,11 +108,6 @@ def test_main_resumes_when_only_one_checkpoint_exists(
                 m=None,
             ),
         ),
-    )
-    monkeypatch.setattr(
-        scraper,
-        "get_courses_session",
-        Mock(return_value=requests.Session()),
     )
     scrape = Mock(return_value=(pd.DataFrame([row]), pd.DataFrame([row])))
     monkeypatch.setattr(scraper, "_scrape_with_interrupt_handling", scrape)

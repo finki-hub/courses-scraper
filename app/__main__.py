@@ -12,126 +12,143 @@ from concurrent.futures import (
     TimeoutError as FuturesTimeoutError,
 )
 from dataclasses import dataclass
-from http import HTTPStatus
 from pathlib import Path
+from threading import Lock, local
+from typing import assert_never
 
 import pandas as pd
 import requests
-from requests.adapters import HTTPAdapter
 from tqdm import tqdm
-from urllib3.util.retry import Retry
 
 from app.constants import (
     COL_ID,
-    Selectors,
     base_urls,
     columns,
     selectors_new,
     selectors_old,
 )
 from app.csv_io import write_csv_atomically
+from app.http import (
+    TRANSPORT_FAILURE_THRESHOLD,
+    InstanceHttpConfig,
+    ProfileEmpty,
+    ProfileSuccess,
+    ProfileTransportFailure,
+    TransportFailureLimitError,
+    create_session,
+    fetch_profile,
+    preflight_instance,
+)
 from app.profile_merge import merge_profiles
-from app.profile_parser import parse_profile_html
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class ScrapeConfig:
-    session_new: requests.Session
-    session_old: requests.Session
-    threads: int
+    http_new: InstanceHttpConfig
+    http_old: InstanceHttpConfig
     checkpoint_new: Path
     checkpoint_old: Path
 
 
-def get_profile(
-    session: requests.Session,
-    profile_id: int,
-    base_url: str,
-    selectors: Selectors,
-) -> dict[str, str]:
-    profile_url = f"{base_url}/user/profile.php?id={profile_id}&showallcourses=1"
+class _WorkerSession(local):
+    session: requests.Session | None
 
-    try:
-        response = session.get(profile_url, timeout=(5, 15))
-    except requests.exceptions.RequestException:
-        logger.warning("Request failed for profile %d", profile_id, exc_info=True)
-        return {}
-
-    if response.status_code != HTTPStatus.OK:
-        return {}
-
-    try:
-        profile = parse_profile_html(response.text, selectors)
-    except (AttributeError, KeyError, TypeError):
-        logger.warning("Failed to parse profile %d", profile_id, exc_info=True)
-        return {}
-
-    if profile:
-        profile[COL_ID] = str(profile_id)
-
-    return profile
+    def __init__(self) -> None:
+        self.session = None
 
 
 def get_profiles(
-    session: requests.Session,
+    config: InstanceHttpConfig,
     profile_ids: range | list[int],
-    threads: int,
-    base_url: str,
-    selectors: Selectors,
 ) -> list[dict[str, str]]:
     profiles: list[dict[str, str]] = []
-    failed = 0
+    profile_ids = list(profile_ids)
+    empty_count = 0
+    transport_failures = 0
+    worker_state = _WorkerSession()
+    worker_sessions: list[requests.Session] = []
+    worker_sessions_lock = Lock()
 
-    with ThreadPoolExecutor(max_workers=threads) as executor:
-        futures = {
-            executor.submit(get_profile, session, pid, base_url, selectors): pid
-            for pid in profile_ids
-        }
+    def fetch_with_worker_session(
+        profile_id: int,
+    ) -> ProfileSuccess | ProfileEmpty | ProfileTransportFailure:
+        if worker_state.session is None:
+            worker_state.session = create_session(config)
+            with worker_sessions_lock:
+                worker_sessions.append(worker_state.session)
+        return fetch_profile(worker_state.session, profile_id, config)
 
-        try:
-            for future in tqdm(
-                as_completed(futures),
-                total=len(futures),
-                desc=base_url.rsplit("//", maxsplit=1)[-1],
-            ):
-                try:
-                    result = future.result()
-                except CancelledError:
-                    pid = futures[future]
-                    logger.info("Profile %d fetch cancelled", pid)
-                    failed += 1
-                    continue
-                except Exception:
-                    pid = futures[future]
-                    logger.warning(
-                        "Unexpected error for profile %d",
-                        pid,
-                        exc_info=True,
-                    )
-                    failed += 1
-                    continue
-                if result:
-                    profiles.append(result)
-                else:
-                    failed += 1
-        except KeyboardInterrupt:
-            logger.info(
-                "Interrupted — cancelling pending futures and returning "
-                "%d profiles collected so far from %s",
-                len(profiles),
-                base_url,
-            )
-            for pending in futures:
-                pending.cancel()
-            raise
+    try:
+        with ThreadPoolExecutor(max_workers=config.threads) as executor:
+            futures = {
+                executor.submit(fetch_with_worker_session, profile_id): profile_id
+                for profile_id in profile_ids
+            }
+
+            try:
+                for future in tqdm(
+                    as_completed(futures),
+                    total=len(futures),
+                    desc=config.base_url.rsplit("//", maxsplit=1)[-1],
+                ):
+                    try:
+                        outcome = future.result()
+                    except CancelledError:
+                        logger.info("Profile %d fetch cancelled", futures[future])
+                        empty_count += 1
+                        continue
+
+                    match outcome:
+                        case ProfileSuccess(profile=profile):
+                            profiles.append(profile)
+                        case ProfileEmpty():
+                            empty_count += 1
+                        case ProfileTransportFailure(profile_id=profile_id):
+                            transport_failures += 1
+                            logger.warning(
+                                "Transport failed for profile %d from %s",
+                                profile_id,
+                                config.base_url,
+                            )
+                            if transport_failures >= TRANSPORT_FAILURE_THRESHOLD:
+                                for pending in futures:
+                                    pending.cancel()
+                                raise TransportFailureLimitError(
+                                    base_url=config.base_url,
+                                    failure_count=transport_failures,
+                                    threshold=TRANSPORT_FAILURE_THRESHOLD,
+                                )
+                        case unreachable:
+                            assert_never(unreachable)
+            except KeyboardInterrupt:
+                logger.info(
+                    "Interrupted — cancelling pending futures and returning "
+                    "%d profiles collected so far from %s",
+                    len(profiles),
+                    config.base_url,
+                )
+                for pending in futures:
+                    pending.cancel()
+                raise
+    finally:
+        for session in worker_sessions:
+            session.close()
+
+    if transport_failures == len(profile_ids) and transport_failures > 0:
+        raise TransportFailureLimitError(
+            base_url=config.base_url,
+            failure_count=transport_failures,
+            threshold=TRANSPORT_FAILURE_THRESHOLD,
+        )
 
     logger.info(
-        "Scraped %d profiles from %s (%d empty/failed)",
+        "Scraped %d profiles from %s (%d empty, %d transport failures)",
         len(profiles),
-        base_url,
-        failed,
+        config.base_url,
+        empty_count,
+        transport_failures,
     )
     return profiles
 
@@ -169,26 +186,6 @@ def parse_args() -> argparse.Namespace:
     id_group.add_argument("-m", type=int, help="Highest ID")
 
     return parser.parse_args()
-
-
-def get_courses_session(cookie: str, threads: int = 10) -> requests.Session:
-    retry_strategy = Retry(
-        total=5,
-        status_forcelist=[429, 500, 502, 503, 504],
-        backoff_factor=1,
-        allowed_methods=["HEAD", "GET", "OPTIONS"],
-    )
-    adapter = HTTPAdapter(
-        max_retries=retry_strategy,
-        pool_connections=max(10, threads),
-        pool_maxsize=max(10, threads),
-    )
-    session = requests.Session()
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    session.cookies.set("MoodleSession", cookie)
-
-    return session
 
 
 def _save_checkpoints(
@@ -238,22 +235,20 @@ def _scrape_with_interrupt_handling(
     future_old: Future[list[dict[str, str]]] = Future()
 
     try:
+        for http_config in (config.http_new, config.http_old):
+            with create_session(http_config) as session:
+                preflight_instance(session, http_config)
+
         with ThreadPoolExecutor(max_workers=2) as site_executor:
             future_new = site_executor.submit(
                 get_profiles,
-                config.session_new,
+                config.http_new,
                 profile_ids_new,
-                config.threads,
-                base_urls["new"],
-                selectors_new,
             )
             future_old = site_executor.submit(
                 get_profiles,
-                config.session_old,
+                config.http_old,
                 profile_ids_old,
-                config.threads,
-                base_urls["old"],
-                selectors_old,
             )
             profiles_new, profiles_old = (
                 future_new.result(),
@@ -383,9 +378,18 @@ def main() -> None:
     output_path.mkdir(exist_ok=True, parents=True)
 
     config = ScrapeConfig(
-        session_new=get_courses_session(args.c1, args.t),
-        session_old=get_courses_session(args.c2, args.t),
-        threads=args.t,
+        http_new=InstanceHttpConfig(
+            base_url=base_urls["new"],
+            cookie=args.c1,
+            selectors=selectors_new,
+            threads=args.t,
+        ),
+        http_old=InstanceHttpConfig(
+            base_url=base_urls["old"],
+            cookie=args.c2,
+            selectors=selectors_old,
+            threads=args.t,
+        ),
         checkpoint_new=output_path / "checkpoint_new.csv",
         checkpoint_old=output_path / "checkpoint_old.csv",
     )
