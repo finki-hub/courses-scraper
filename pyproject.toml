@@ -21,10 +21,15 @@ dev = [
     "types-tqdm>=4.70.0.20260827,<5",
     "types-beautifulsoup4>=4.12.0.20250516,<5",
     "types-requests>=2.33.0.20260712,<3",
+    "pytest>=9,<10",
 ]
 
 [tool.mypy]
 strict = true
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
 
 [tool.ruff]
 target-version = "py313"
@@ -69,6 +74,9 @@ select = [
     "RUF",
 ]
 ignore = ["PLR2004", "PLR0912", "PLR0915", "TRY003", "PLR0911", "RET504"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101", "SLF001"]
 
 [tool.ruff.format]
 quote-style = "double"
