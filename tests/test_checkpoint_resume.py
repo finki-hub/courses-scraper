@@ -107,5 +107,7 @@ def test_main_resumes_when_only_one_checkpoint_exists(
     scraper.main()
 
     # Then the surviving side is supplied as resume state.
+    assert scrape.call_args.args[1] == [2]
+    assert scrape.call_args.args[2] == [1, 2]
     assert scrape.call_args.kwargs["existing_new"].loc[0, COL_ID] == "1"
     assert scrape.call_args.kwargs["existing_old"].empty

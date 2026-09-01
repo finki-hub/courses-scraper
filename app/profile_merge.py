@@ -53,11 +53,15 @@ def _normalize_side(
     normalized = df.rename(columns={column: f"{column}_{side}" for column in df})
     normalized[f"{COL_ID}_{side}"] = ids
     emails = normalized[f"{COL_MAIL}_{side}"].fillna("").astype(str).str.strip()
-    normalized_emails = emails.str.casefold()
-    normalized[_EMAIL_KEY] = normalized_emails.where(
-        normalized_emails.str.fullmatch(_EMAIL_PATTERN, na=False),
-        "",
+    normalized_emails = emails.str.lower()
+    local_part_lengths = emails.str.split("@", n=1).str[0].str.len()
+    valid_emails = (
+        emails.str.fullmatch(r"[\x00-\x7f]+", na=False)
+        & (emails.str.len() <= 254)
+        & (local_part_lengths <= 64)
+        & normalized_emails.str.fullmatch(_EMAIL_PATTERN, na=False)
     )
+    normalized[_EMAIL_KEY] = normalized_emails.where(valid_emails, "")
     return normalized
 
 
