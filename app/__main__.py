@@ -33,6 +33,7 @@ from app.constants import (
     selectors_new,
     selectors_old,
 )
+from app.csv_io import write_csv_atomically
 from app.profile_merge import merge_profiles
 
 logger = logging.getLogger(__name__)
@@ -315,8 +316,8 @@ def _save_checkpoints(
     checkpoint_new: Path,
     checkpoint_old: Path,
 ) -> None:
-    df_new.to_csv(checkpoint_new, index=False)
-    df_old.to_csv(checkpoint_old, index=False)
+    write_csv_atomically(df_new, checkpoint_new)
+    write_csv_atomically(df_old, checkpoint_old)
     logger.info(
         "Checkpoints saved (%d new, %d old profiles)",
         len(df_new),
@@ -473,7 +474,7 @@ def _finalize_output(
     config: ScrapeConfig,
 ) -> None:
     df_merged = merge_profiles(df_old, df_new)
-    df_merged.to_csv(output_path / output_file, index=False)
+    write_csv_atomically(df_merged, output_path / output_file)
 
     if config.checkpoint_new.exists():
         config.checkpoint_new.unlink()
@@ -517,8 +518,12 @@ def main() -> None:
             profile_ids,
             profile_ids,
         )
-        df_new.to_csv(config.checkpoint_new, index=False)
-        df_old.to_csv(config.checkpoint_old, index=False)
+        _save_checkpoints(
+            df_new,
+            df_old,
+            config.checkpoint_new,
+            config.checkpoint_old,
+        )
 
     _finalize_output(df_old, df_new, output_path, args.o, config)
     logger.info("Finished in %.2f seconds", time.time() - start)
