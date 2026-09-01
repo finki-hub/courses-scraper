@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from app.constants import COL_COURSES, COL_ID, COL_MAIL, COL_NAME, base_urls
 from app.profile_merge import merge_profiles
@@ -57,6 +58,29 @@ def test_malformed_email_does_not_match_profiles() -> None:
     merged = merge_profiles(old, new)
 
     # Then the malformed email does not correlate the profiles.
+    assert len(merged) == 2
+
+
+@pytest.mark.parametrize(
+    ("old_email", "new_email"),
+    [
+        ("\u017f@example.com", "s@example.com"),
+        ("ß@example.com", "ss@example.com"),
+        (f"{'a' * 65}@example.com", f"{'a' * 65}@example.com"),
+    ],
+)
+def test_unsafe_email_normalization_does_not_match_profiles(
+    old_email: str,
+    new_email: str,
+) -> None:
+    # Given addresses that would collide after unsafe normalization.
+    old = _profiles([[1, "Old", old_email, ""]])
+    new = _profiles([[2, "New", new_email, ""]])
+
+    # When the instance profiles are merged.
+    merged = merge_profiles(old, new)
+
+    # Then invalid identity keys leave the profiles separate.
     assert len(merged) == 2
 
 
