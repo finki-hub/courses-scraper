@@ -5,10 +5,16 @@ import getpass
 import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Final
 
 OUTPUT_DIRECTORY: Final = Path("output")
+_WINDOWS_FORBIDDEN_FILENAME_CHARACTERS: Final = frozenset('<>:"/\\|?*')
+_WINDOWS_RESERVED_FILENAMES: Final = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{number}" for number in range(1, 10)}
+    | {f"LPT{number}" for number in range(1, 10)}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,15 +52,27 @@ def _positive_int(raw: str) -> int:
 
 
 def _plain_output_filename(raw: str) -> Path:
-    candidate = Path(raw)
+    posix = PurePosixPath(raw)
+    windows = PureWindowsPath(raw)
+    windows_name = windows.name
+    windows_stem = windows_name.partition(".")[0].upper()
     if (
-        candidate.is_absolute()
-        or candidate.parent != Path()
-        or candidate.name in {"", ".", ".."}
+        posix.is_absolute()
+        or posix.parent != PurePosixPath()
+        or windows.is_absolute()
+        or windows.drive
+        or windows.parent != PureWindowsPath()
+        or windows_name.endswith((" ", "."))
+        or windows_stem in _WINDOWS_RESERVED_FILENAMES
+        or any(
+            character in _WINDOWS_FORBIDDEN_FILENAME_CHARACTERS or ord(character) < 32
+            for character in windows_name
+        )
+        or posix.name in {"", ".", ".."}
     ):
         message = "must be a plain filename inside output/"
         raise argparse.ArgumentTypeError(message)
-    return candidate
+    return Path(raw)
 
 
 def parse_cli(

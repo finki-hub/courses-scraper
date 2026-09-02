@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import argparse
 import sys
 from collections.abc import Callable, Mapping, Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from unittest.mock import Mock
 
 import pytest
 
 import app.__main__ as scraper
+from app import cli
 from app.cli import CliConfig, parse_cli
 
 
@@ -92,6 +94,11 @@ def test_parse_cli_rejects_nonpositive_execution_numbers(
         "nested\\profiles.csv",
         str(Path.home() / "profiles.csv"),
         "C:\\tmp\\profiles.csv",
+        "CON",
+        "con.csv",
+        "profile.",
+        "profile ",
+        "profile*.csv",
         ".",
         "..",
     ],
@@ -114,6 +121,17 @@ def test_parse_cli_rejects_output_outside_output_directory(output_name: str) -> 
         _parse(argv)
 
     assert caught.value.code == 2
+
+
+def test_output_filename_rejects_windows_path_under_posix_semantics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given the path semantics used by the Linux CI runner.
+    monkeypatch.setattr(cli, "Path", PurePosixPath)
+
+    # When a Windows-style nested path is parsed, then it is still rejected.
+    with pytest.raises(argparse.ArgumentTypeError):
+        cli._plain_output_filename("nested\\profiles.csv")
 
 
 @pytest.mark.parametrize(
