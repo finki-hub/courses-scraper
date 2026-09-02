@@ -12,18 +12,52 @@ from requests.auth import AuthBase
 from urllib3.util.retry import Retry
 
 from app.constants import COL_ID, Selectors
-from app.profile_parser import parse_profile_html
+from app.profile_outcomes import (
+    TRANSPORT_FAILURE_RATE_THRESHOLD,
+    TRANSPORT_FAILURE_THRESHOLD,
+    EmptyReason,
+    Profile,
+    ProfileEmpty,
+    ProfileFailureReason,
+    ProfileFetchOutcome,
+    ProfileRequestError,
+    ProfileSuccess,
+    ProfileTransportFailure,
+    TransportFailureLimitError,
+    transport_failure_rate_exceeded,
+)
+from app.profile_parser import LoginPageError, parse_profile_html
+
+__all__ = (
+    "REQUEST_TIMEOUT",
+    "RETRYABLE_STATUSES",
+    "TRANSPORT_FAILURE_RATE_THRESHOLD",
+    "TRANSPORT_FAILURE_THRESHOLD",
+    "USER_AGENT",
+    "EmptyReason",
+    "InstanceHttpConfig",
+    "PreflightError",
+    "PreflightFailureReason",
+    "Profile",
+    "ProfileEmpty",
+    "ProfileFailureReason",
+    "ProfileFetchOutcome",
+    "ProfileRequestError",
+    "ProfileSuccess",
+    "ProfileTransportFailure",
+    "TransportFailureLimitError",
+    "create_session",
+    "fetch_profile",
+    "preflight_instance",
+    "transport_failure_rate_exceeded",
+)
 
 REQUEST_TIMEOUT: Final = (5, 15)
-TRANSPORT_FAILURE_THRESHOLD: Final = 3
-TRANSPORT_FAILURE_RATE_THRESHOLD: Final = 0.5
 USER_AGENT: Final = (
     "courses-scraper/0.1.0 "
     "(+https://github.com/finki-hub/courses-scraper; profile export)"
 )
 RETRYABLE_STATUSES: Final = frozenset({429, 500, 502, 503, 504})
-
-type Profile = dict[str, str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,35 +69,9 @@ class InstanceHttpConfig:
 
 
 @unique
-class EmptyReason(StrEnum):
-    HTTP_STATUS = "http_status"
-    EMPTY_PROFILE = "empty_profile"
-    PARSE_ERROR = "parse_error"
-
-
-@dataclass(frozen=True, slots=True)
-class ProfileSuccess:
-    profile: Profile
-
-
-@dataclass(frozen=True, slots=True)
-class ProfileEmpty:
-    profile_id: int
-    reason: EmptyReason
-    status_code: int
-
-
-@dataclass(frozen=True, slots=True)
-class ProfileTransportFailure:
-    profile_id: int
-
-
-type ProfileFetchOutcome = ProfileSuccess | ProfileEmpty | ProfileTransportFailure
-
-
-@unique
 class PreflightFailureReason(StrEnum):
     LOGIN_REDIRECT = "login_redirect"
+    LOGIN_RESPONSE = "login_response"
     REDIRECT = "redirect"
     HTTP_STATUS = "http_status"
     EMPTY_PROFILE = "empty_profile"
@@ -80,38 +88,6 @@ class PreflightError(Exception):
     def __str__(self) -> str:
         status = "" if self.status_code is None else f" ({self.status_code})"
         return f"preflight failed for {self.base_url}: {self.reason.value}{status}"
-
-
-@dataclass(frozen=True, slots=True)
-class TransportFailureLimitError(Exception):
-    base_url: str
-    failure_count: int
-    outcome_count: int
-    minimum_outcomes: int = TRANSPORT_FAILURE_THRESHOLD
-    rate_threshold: float = TRANSPORT_FAILURE_RATE_THRESHOLD
-
-    def __str__(self) -> str:
-        return (
-            f"aborted {self.base_url} after {self.failure_count} of "
-            f"{self.outcome_count} observed outcomes were transport failures "
-            f"(limit: >{self.rate_threshold:.0%} after {self.minimum_outcomes} "
-            "outcomes or batch completion)"
-        )
-
-
-def transport_failure_rate_exceeded(
-    failure_count: int,
-    outcome_count: int,
-    request_count: int,
-) -> bool:
-    enough_evidence = (
-        outcome_count >= TRANSPORT_FAILURE_THRESHOLD or outcome_count == request_count
-    )
-    return (
-        failure_count > 0
-        and enough_evidence
-        and failure_count / outcome_count > TRANSPORT_FAILURE_RATE_THRESHOLD
-    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,19 +123,20 @@ def create_session(config: InstanceHttpConfig) -> requests.Session:
         status_forcelist=RETRYABLE_STATUSES,
         backoff_factor=1,
         allowed_methods=frozenset({"HEAD", "GET", "OPTIONS"}),
+        raise_on_status=False,
     )
     adapter = HTTPAdapter(
         max_retries=retry_strategy,
         pool_connections=max(10, config.threads),
         pool_maxsize=max(10, config.threads),
     )
-    host = urlsplit(config.base_url).hostname
-    if host is None:
-        raise ValueError(f"invalid instance URL: {config.base_url}")
+    instance_url = urlsplit(config.base_url)
+    host = instance_url.hostname
+    if instance_url.scheme != "https" or host is None:
+        raise ValueError(f"instance URL must use HTTPS: {config.base_url}")
 
     session = _ExactHostCookieSession()
     session.mount("https://", adapter)
-    session.mount("http://", adapter)
     session.headers["User-Agent"] = USER_AGENT
     session.auth = _ExactHostCookieAuth(host=host, cookie=config.cookie)
     return session
@@ -202,6 +179,12 @@ def preflight_instance(
 
     try:
         profile = parse_profile_html(response.text, config.selectors)
+    except LoginPageError as error:
+        raise PreflightError(
+            base_url=config.base_url,
+            reason=PreflightFailureReason.LOGIN_RESPONSE,
+            status_code=response.status_code,
+        ) from error
     except (AttributeError, KeyError, TypeError) as error:
         raise PreflightError(
             base_url=config.base_url,
@@ -223,18 +206,46 @@ def fetch_profile(
 ) -> ProfileFetchOutcome:
     profile_url = f"{config.base_url}/user/profile.php?id={profile_id}&showallcourses=1"
     try:
-        response = session.get(profile_url, timeout=REQUEST_TIMEOUT)
+        response = session.get(
+            profile_url,
+            allow_redirects=False,
+            timeout=REQUEST_TIMEOUT,
+        )
     except requests.exceptions.RequestException:
         return ProfileTransportFailure(profile_id=profile_id)
 
-    if response.status_code != HTTPStatus.OK:
+    if response.is_redirect or response.is_permanent_redirect:
+        raise ProfileRequestError(
+            profile_id=profile_id,
+            reason=ProfileFailureReason.REDIRECT,
+            status_code=response.status_code,
+        )
+    if response.status_code == HTTPStatus.NOT_FOUND:
         return ProfileEmpty(
             profile_id=profile_id,
             reason=EmptyReason.HTTP_STATUS,
             status_code=response.status_code,
         )
+    if response.status_code != HTTPStatus.OK:
+        raise ProfileRequestError(
+            profile_id=profile_id,
+            reason=ProfileFailureReason.HTTP_STATUS,
+            status_code=response.status_code,
+        )
+    if "/login/" in urlsplit(response.url).path:
+        raise ProfileRequestError(
+            profile_id=profile_id,
+            reason=ProfileFailureReason.LOGIN_RESPONSE,
+            status_code=response.status_code,
+        )
     try:
         profile = parse_profile_html(response.text, config.selectors)
+    except LoginPageError as error:
+        raise ProfileRequestError(
+            profile_id=profile_id,
+            reason=ProfileFailureReason.LOGIN_RESPONSE,
+            status_code=response.status_code,
+        ) from error
     except (AttributeError, KeyError, TypeError):
         return ProfileEmpty(
             profile_id=profile_id,

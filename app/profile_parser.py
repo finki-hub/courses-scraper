@@ -2,11 +2,22 @@ from bs4 import BeautifulSoup, Tag
 
 from app.constants import COL_COURSES, COL_NAME, Selectors, fields
 
-__all__ = ["parse_profile_html"]
+__all__ = ["LoginPageError", "parse_profile_html"]
+
+
+class LoginPageError(Exception):
+    pass
 
 
 def parse_profile_html(html: str, selectors: Selectors) -> dict[str, str]:
     soup = BeautifulSoup(html, "lxml")
+    login_form = soup.select_one("form#login")
+    if (
+        login_form is not None
+        and login_form.select_one('input[name="username"]') is not None
+        and login_form.select_one('input[name="password"]') is not None
+    ):
+        raise LoginPageError
     profile = {
         COL_NAME: _selected_text(soup, selectors["name_selector"]),
         "Description": _selected_text(soup, selectors["description_selector"]),

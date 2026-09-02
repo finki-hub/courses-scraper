@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -8,11 +9,14 @@ from requests.adapters import HTTPAdapter
 from app.constants import COL_ID, selectors_new
 from app.http import (
     REQUEST_TIMEOUT,
+    TRANSPORT_FAILURE_RATE_THRESHOLD,
     EmptyReason,
     InstanceHttpConfig,
     PreflightError,
     PreflightFailureReason,
     ProfileEmpty,
+    ProfileFailureReason,
+    ProfileRequestError,
     ProfileSuccess,
     ProfileTransportFailure,
     create_session,
@@ -88,6 +92,17 @@ def test_session_preserves_retryable_status_policy() -> None:
         assert retries.total == 5
         assert retries.status_forcelist == {429, 500, 502, 503, 504}
         assert retries.allowed_methods == frozenset({"HEAD", "GET", "OPTIONS"})
+        assert retries.raise_on_status is False
+        assert TRANSPORT_FAILURE_RATE_THRESHOLD == 0.5
+
+
+def test_session_rejects_insecure_instance_url() -> None:
+    # Given an instance URL that would send scraper traffic over plain HTTP.
+    config = replace(_config(), base_url="http://courses.finki.ukim.mk")
+
+    # When the session is created, then insecure transport is rejected.
+    with pytest.raises(ValueError, match="HTTPS"):
+        create_session(config)
 
 
 def test_preflight_disables_redirects_and_accepts_profile() -> None:
@@ -120,6 +135,14 @@ def test_preflight_disables_redirects_and_accepts_profile() -> None:
         (
             _response(200, "<html><body></body></html>"),
             PreflightFailureReason.EMPTY_PROFILE,
+        ),
+        (
+            _response(
+                200,
+                '<form id="login"><input name="username">'
+                '<input name="password"></form>',
+            ),
+            PreflightFailureReason.LOGIN_RESPONSE,
         ),
     ],
 )
@@ -189,6 +212,76 @@ def test_fetch_profile_distinguishes_empty_outcomes(
     # Then it is an explicit empty outcome rather than success or transport failure.
     assert isinstance(outcome, ProfileEmpty)
     assert outcome.reason is reason
+
+
+@pytest.mark.parametrize("status_code", [401, 403, 503])
+def test_fetch_profile_does_not_treat_http_failures_as_empty(
+    status_code: int,
+) -> None:
+    # Given an authenticated scrape request that receives a fatal HTTP response.
+    session = Mock(spec=requests.Session)
+    session.get.return_value = _response(status_code)
+
+    # When the response is classified, then it cannot become completed empty work.
+    with pytest.raises(ProfileRequestError) as caught:
+        fetch_profile(session, 42, _config())
+
+    assert caught.value.profile_id == 42
+    assert caught.value.reason is ProfileFailureReason.HTTP_STATUS
+    assert caught.value.status_code == status_code
+
+
+def test_fetch_profile_does_not_follow_or_complete_redirects() -> None:
+    # Given a profile request redirected to the Moodle login page.
+    session = Mock(spec=requests.Session)
+    session.get.return_value = _response(302, location="/login/index.php")
+
+    # When the profile is fetched, then redirect handling remains explicit.
+    with pytest.raises(ProfileRequestError) as caught:
+        fetch_profile(session, 42, _config())
+
+    session.get.assert_called_once_with(
+        f"{BASE_URL}/user/profile.php?id=42&showallcourses=1",
+        allow_redirects=False,
+        timeout=REQUEST_TIMEOUT,
+    )
+    assert caught.value.profile_id == 42
+    assert caught.value.reason is ProfileFailureReason.REDIRECT
+    assert caught.value.status_code == 302
+
+
+def test_fetch_profile_does_not_complete_login_page_response() -> None:
+    # Given a successful profile URL that renders Moodle's login form.
+    session = Mock(spec=requests.Session)
+    response = _response(
+        200,
+        '<form id="login"><input name="username"><input name="password"></form>',
+    )
+    session.get.return_value = response
+
+    # When the response is classified, then it cannot become completed empty work.
+    with pytest.raises(ProfileRequestError) as caught:
+        fetch_profile(session, 42, _config())
+
+    assert caught.value.profile_id == 42
+    assert caught.value.reason is ProfileFailureReason.LOGIN_RESPONSE
+    assert caught.value.status_code == 200
+
+
+def test_fetch_profile_preserves_parse_errors_as_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = Mock(spec=requests.Session)
+    session.get.return_value = _response(200, "<html></html>")
+    monkeypatch.setattr(
+        "app.http.parse_profile_html",
+        Mock(side_effect=TypeError("invalid profile markup")),
+    )
+
+    outcome = fetch_profile(session, 42, _config())
+
+    assert isinstance(outcome, ProfileEmpty)
+    assert outcome.reason is EmptyReason.PARSE_ERROR
 
 
 def test_fetch_profile_distinguishes_transport_failure() -> None:
