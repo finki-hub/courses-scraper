@@ -71,7 +71,9 @@ def _details(element: Tag, selectors: Selectors) -> dict[str, str]:
     for detail in element.select(selectors["details_selector"]):
         field_element = detail.select_one("dt")
         value_element = detail.select_one("dd")
-        if field_element is None or value_element is None:
+        if field_element is None:
+            continue
+        if value_element is None:
             continue
 
         field = _display_text(field_element).casefold()
@@ -103,7 +105,9 @@ def _last_access(element: Tag, selectors: Selectors) -> str:
     for detail in element.select(selectors["details_selector"]):
         field_element = detail.select_one("dt")
         value_element = detail.select_one("dd")
-        if field_element is None or value_element is None:
+        if field_element is None:
+            continue
+        if value_element is None:
             continue
         if _display_text(field_element).casefold() == "last access":
             value = value_element.get_text(" ", strip=True).replace("\xa0", "; ")
