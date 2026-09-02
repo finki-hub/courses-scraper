@@ -55,10 +55,10 @@ script prompts without echoing the cookie. Cookie values must be nonblank and
 cannot contain control characters, whitespace, semicolons, or commas.
 
 Before scraping, each instance must return an authenticated profile without a
-redirect. During scraping, three transport failures on one instance abort the
-run rather than producing an empty successful export. A batch smaller than three
-also aborts when every request fails at the transport boundary. HTTP responses
-that contain no exportable profile remain ordinary empty results.
+redirect. During scraping, transport failures abort an instance when they exceed
+half of at least three observed outcomes. Smaller batches abort when most requests
+fail at the transport boundary. HTTP responses that contain no exportable profile
+remain ordinary empty results.
 
 Progress is checkpointed after 100 completed profiles, every 30 seconds while
 new progress is pending, and on interruption. Re-running with the same profile
