@@ -1,48 +1,47 @@
 import logging
+import os
 import sys
 import time
 from collections.abc import Sequence
-from concurrent.futures import (
-    CancelledError,
-    Future,
-    ThreadPoolExecutor,
-    as_completed,
-)
-from concurrent.futures import (
-    TimeoutError as FuturesTimeoutError,
-)
 from dataclasses import dataclass
 from pathlib import Path
-from threading import Lock, local
-from typing import assert_never
+from typing import Final, NoReturn
 
 import pandas as pd
-import requests
-from tqdm import tqdm
 
+from app.checkpoints import (
+    CheckpointPaths,
+    CheckpointSnapshot,
+    InstanceCheckpoint,
+)
+from app.checkpoints import clear as clear_checkpoints
+from app.checkpoints import load as load_checkpoint
+from app.checkpoints import save as save_checkpoint
 from app.cli import parse_cli
 from app.constants import (
     COL_ID,
     base_urls,
-    columns,
     selectors_new,
     selectors_old,
 )
+from app.coordinator import CoordinatorPlan
+from app.coordinator import run as run_coordinator
 from app.csv_io import write_csv_atomically
 from app.http import (
-    TRANSPORT_FAILURE_THRESHOLD,
     InstanceHttpConfig,
-    ProfileEmpty,
-    ProfileSuccess,
-    ProfileTransportFailure,
-    TransportFailureLimitError,
     create_session,
     fetch_profile,
-    preflight_instance,
+)
+from app.profile_collection import (
+    ProfileCollectionDependencies,
+    collect_profiles,
 )
 from app.profile_merge import merge_profiles
 
 logger = logging.getLogger(__name__)
+CHECKPOINT_BATCH_SIZE: Final = 100
+CHECKPOINT_INTERVAL_SECONDS: Final = 30.0
+POLL_INTERVAL_SECONDS: Final = 0.25
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,105 +52,18 @@ class ScrapeConfig:
     checkpoint_old: Path
 
 
-class _WorkerSession(local):
-    session: requests.Session | None
-
-    def __init__(self) -> None:
-        self.session = None
-
-
 def get_profiles(
     config: InstanceHttpConfig,
     profile_ids: Sequence[int],
 ) -> list[dict[str, str]]:
-    profiles: list[dict[str, str]] = []
-    profile_ids = list(profile_ids)
-    empty_count = 0
-    transport_failures = 0
-    worker_state = _WorkerSession()
-    worker_sessions: list[requests.Session] = []
-    worker_sessions_lock = Lock()
-
-    def fetch_with_worker_session(
-        profile_id: int,
-    ) -> ProfileSuccess | ProfileEmpty | ProfileTransportFailure:
-        if worker_state.session is None:
-            worker_state.session = create_session(config)
-            with worker_sessions_lock:
-                worker_sessions.append(worker_state.session)
-        return fetch_profile(worker_state.session, profile_id, config)
-
-    try:
-        with ThreadPoolExecutor(max_workers=config.threads) as executor:
-            futures = {
-                executor.submit(fetch_with_worker_session, profile_id): profile_id
-                for profile_id in profile_ids
-            }
-
-            try:
-                for future in tqdm(
-                    as_completed(futures),
-                    total=len(futures),
-                    desc=config.base_url.rsplit("//", maxsplit=1)[-1],
-                ):
-                    try:
-                        outcome = future.result()
-                    except CancelledError:
-                        logger.info("Profile %d fetch cancelled", futures[future])
-                        empty_count += 1
-                        continue
-
-                    match outcome:
-                        case ProfileSuccess(profile=profile):
-                            profiles.append(profile)
-                        case ProfileEmpty():
-                            empty_count += 1
-                        case ProfileTransportFailure(profile_id=profile_id):
-                            transport_failures += 1
-                            logger.warning(
-                                "Transport failed for profile %d from %s",
-                                profile_id,
-                                config.base_url,
-                            )
-                            if transport_failures >= TRANSPORT_FAILURE_THRESHOLD:
-                                for pending in futures:
-                                    pending.cancel()
-                                raise TransportFailureLimitError(
-                                    base_url=config.base_url,
-                                    failure_count=transport_failures,
-                                    threshold=TRANSPORT_FAILURE_THRESHOLD,
-                                )
-                        case unreachable:
-                            assert_never(unreachable)
-            except KeyboardInterrupt:
-                logger.info(
-                    "Interrupted — cancelling pending futures and returning "
-                    "%d profiles collected so far from %s",
-                    len(profiles),
-                    config.base_url,
-                )
-                for pending in futures:
-                    pending.cancel()
-                raise
-    finally:
-        for session in worker_sessions:
-            session.close()
-
-    if transport_failures == len(profile_ids) and transport_failures > 0:
-        raise TransportFailureLimitError(
-            base_url=config.base_url,
-            failure_count=transport_failures,
-            threshold=TRANSPORT_FAILURE_THRESHOLD,
-        )
-
-    logger.info(
-        "Scraped %d profiles from %s (%d empty, %d transport failures)",
-        len(profiles),
-        config.base_url,
-        empty_count,
-        transport_failures,
+    return collect_profiles(
+        config,
+        profile_ids,
+        ProfileCollectionDependencies(
+            create_session=create_session,
+            fetch_profile=fetch_profile,
+        ),
     )
-    return profiles
 
 
 def reorder_columns(df: pd.DataFrame, col_order: list[str]) -> pd.DataFrame:
@@ -162,100 +74,53 @@ def reorder_columns(df: pd.DataFrame, col_order: list[str]) -> pd.DataFrame:
     return df.loc[:, col_order].copy()
 
 
-def _save_checkpoints(
-    df_new: pd.DataFrame,
-    df_old: pd.DataFrame,
-    checkpoint_new: Path,
-    checkpoint_old: Path,
-) -> None:
-    write_csv_atomically(df_new, checkpoint_new)
-    write_csv_atomically(df_old, checkpoint_old)
-    logger.info(
-        "Checkpoints saved (%d new, %d old profiles)",
-        len(df_new),
-        len(df_old),
+def _checkpoint_paths(config: ScrapeConfig) -> CheckpointPaths:
+    return CheckpointPaths(
+        manifest=config.checkpoint_new.parent / "checkpoint_manifest.json",
+        legacy_new=config.checkpoint_new,
+        legacy_old=config.checkpoint_old,
     )
 
 
-def _salvage_futures(
-    future_new: Future[list[dict[str, str]]],
-    future_old: Future[list[dict[str, str]]],
-) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
-    salvaged_new: list[dict[str, str]] = []
-    salvaged_old: list[dict[str, str]] = []
-    try:
-        salvaged_new = future_new.result(timeout=0)
-    except (CancelledError, FuturesTimeoutError):
-        logger.debug("Could not retrieve new profiles (not ready or cancelled)")
-    except Exception:
-        logger.debug("Could not retrieve new profiles", exc_info=True)
-    try:
-        salvaged_old = future_old.result(timeout=0)
-    except (CancelledError, FuturesTimeoutError):
-        logger.debug("Could not retrieve old profiles (not ready or cancelled)")
-    except Exception:
-        logger.debug("Could not retrieve old profiles", exc_info=True)
-    return salvaged_new, salvaged_old
+def _terminate_process(exit_code: int) -> NoReturn:
+    logging.shutdown()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(exit_code)
+
+
+@dataclass(frozen=True, slots=True)
+class _ScrapeState:
+    requested_ids: tuple[int, ...]
+    new: InstanceCheckpoint
+    old: InstanceCheckpoint
 
 
 def _scrape_with_interrupt_handling(
     config: ScrapeConfig,
     profile_ids_new: Sequence[int],
     profile_ids_old: Sequence[int],
-    existing_new: pd.DataFrame | None = None,
-    existing_old: pd.DataFrame | None = None,
+    state: _ScrapeState | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    future_new: Future[list[dict[str, str]]] = Future()
-    future_old: Future[list[dict[str, str]]] = Future()
-
-    try:
-        for http_config in (config.http_new, config.http_old):
-            with create_session(http_config) as session:
-                preflight_instance(session, http_config)
-
-        with ThreadPoolExecutor(max_workers=2) as site_executor:
-            future_new = site_executor.submit(
-                get_profiles,
-                config.http_new,
-                profile_ids_new,
-            )
-            future_old = site_executor.submit(
-                get_profiles,
-                config.http_old,
-                profile_ids_old,
-            )
-            profiles_new, profiles_old = (
-                future_new.result(),
-                future_old.result(),
-            )
-    except KeyboardInterrupt:
-        logger.info("Interrupted — saving partial checkpoints...")
-        partial_new, partial_old = _salvage_futures(future_new, future_old)
-        df_new = reorder_columns(pd.DataFrame(partial_new), columns)
-        df_old = reorder_columns(pd.DataFrame(partial_old), columns)
-
-        if existing_new is not None:
-            df_new = pd.concat([existing_new, df_new], ignore_index=True)
-        if existing_old is not None:
-            df_old = pd.concat([existing_old, df_old], ignore_index=True)
-
-        _save_checkpoints(
-            df_new,
-            df_old,
-            config.checkpoint_new,
-            config.checkpoint_old,
-        )
-        sys.exit(130)
-
-    df_new = reorder_columns(pd.DataFrame(profiles_new), columns)
-    df_old = reorder_columns(pd.DataFrame(profiles_old), columns)
-
-    if existing_new is not None:
-        df_new = pd.concat([existing_new, df_new], ignore_index=True)
-    if existing_old is not None:
-        df_old = pd.concat([existing_old, df_old], ignore_index=True)
-
-    return df_new, df_old
+    initial = None
+    if state is not None:
+        initial = CheckpointSnapshot(state.requested_ids, state.new, state.old)
+    snapshot = run_coordinator(
+        CoordinatorPlan(
+            http_new=config.http_new,
+            http_old=config.http_old,
+            profile_ids_new=profile_ids_new,
+            profile_ids_old=profile_ids_old,
+            paths=_checkpoint_paths(config),
+            initial=initial,
+            batch_size=CHECKPOINT_BATCH_SIZE,
+            poll_interval=POLL_INTERVAL_SECONDS,
+            checkpoint_interval=CHECKPOINT_INTERVAL_SECONDS,
+            monotonic_clock=time.monotonic,
+            terminate=_terminate_process,
+        ),
+    )
+    return snapshot.new.frame, snapshot.old.frame
 
 
 def _remaining_profile_ids(
@@ -268,28 +133,34 @@ def _remaining_profile_ids(
     ]
 
 
-def _load_checkpoint(path: Path) -> pd.DataFrame:
-    if not path.exists():
-        return pd.DataFrame(columns=columns, dtype="string")
-    return reorder_columns(
-        pd.read_csv(path, dtype="string", keep_default_na=False),
-        columns,
-    )
-
-
 def _resume_from_checkpoints(
     config: ScrapeConfig,
     profile_ids: Sequence[int],
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     logger.info("Loading from checkpoints...")
-    df_new = _load_checkpoint(config.checkpoint_new)
-    df_old = _load_checkpoint(config.checkpoint_old)
-    remaining_new = _remaining_profile_ids(profile_ids, df_new)
-    remaining_old = _remaining_profile_ids(profile_ids, df_old)
+    paths = _checkpoint_paths(config)
+    snapshot = load_checkpoint(paths, tuple(profile_ids))
+    if snapshot is None:
+        return _scrape_with_interrupt_handling(
+            config,
+            profile_ids,
+            profile_ids,
+        )
+    remaining_new = [
+        profile_id
+        for profile_id in profile_ids
+        if profile_id not in snapshot.new.completed_ids
+    ]
+    remaining_old = [
+        profile_id
+        for profile_id in profile_ids
+        if profile_id not in snapshot.old.completed_ids
+    ]
 
     if not remaining_new and not remaining_old:
         logger.info("All profiles already scraped.")
-        return df_new, df_old
+        save_checkpoint(paths, snapshot)
+        return snapshot.new.frame, snapshot.old.frame
 
     logger.info(
         "Resuming scraping for %d new and %d old remaining profiles...",
@@ -301,8 +172,11 @@ def _resume_from_checkpoints(
         config,
         remaining_new,
         remaining_old,
-        existing_new=df_new,
-        existing_old=df_old,
+        _ScrapeState(
+            requested_ids=snapshot.requested_ids,
+            new=snapshot.new,
+            old=snapshot.old,
+        ),
     )
 
 
@@ -316,10 +190,7 @@ def _finalize_output(
     df_merged = merge_profiles(df_old, df_new)
     write_csv_atomically(df_merged, output_path / output_file)
 
-    if config.checkpoint_new.exists():
-        config.checkpoint_new.unlink()
-    if config.checkpoint_old.exists():
-        config.checkpoint_old.unlink()
+    clear_checkpoints(_checkpoint_paths(config))
 
     logger.info("Written %d profiles to %s", len(df_merged), output_path / output_file)
 
@@ -355,7 +226,12 @@ def main() -> None:
         checkpoint_old=output_path / "checkpoint_old.csv",
     )
 
-    if config.checkpoint_new.exists() or config.checkpoint_old.exists():
+    checkpoint_paths = _checkpoint_paths(config)
+    if (
+        checkpoint_paths.manifest.exists()
+        or checkpoint_paths.legacy_new.exists()
+        or checkpoint_paths.legacy_old.exists()
+    ):
         df_new, df_old = _resume_from_checkpoints(config, profile_ids)
     else:
         logger.info("Scraping both instances concurrently...")
@@ -363,12 +239,6 @@ def main() -> None:
             config,
             profile_ids,
             profile_ids,
-        )
-        _save_checkpoints(
-            df_new,
-            df_old,
-            config.checkpoint_new,
-            config.checkpoint_old,
         )
 
     _finalize_output(df_old, df_new, output_path, cli_config.output_file.name, config)
