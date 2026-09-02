@@ -21,6 +21,21 @@ def test_empty_page_returns_no_profile() -> None:
     assert profile == {}
 
 
+def test_avatar_only_page_returns_no_profile() -> None:
+    # Given a page containing only Moodle's profile-image markup.
+    html = (
+        "<html><body><div class='page-header-image'>"
+        "<img class='userpicture' src='avatar.png'>"
+        "</div></body></html>"
+    )
+
+    # When the response HTML is parsed.
+    profile = parse_profile_html(html, selectors_new)
+
+    # Then an image alone cannot prove that the page is a substantive profile.
+    assert profile == {}
+
+
 def test_new_instance_profile_fixture_parses_stable_fields() -> None:
     # Given representative HTML from the new Moodle instance.
     html = _fixture("profile_new.html")

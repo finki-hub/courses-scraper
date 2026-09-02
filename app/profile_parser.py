@@ -29,7 +29,10 @@ def parse_profile_html(html: str, selectors: Selectors) -> dict[str, str]:
         if heading_text == "login activity":
             profile["Last Access"] = _last_access(section, selectors)
 
-    return profile if any(profile.values()) else {}
+    substantive = (
+        value for field, value in profile.items() if field not in {"Images", "Avatar"}
+    )
+    return profile if any(substantive) else {}
 
 
 def _display_text(element: Tag) -> str:
