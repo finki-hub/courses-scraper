@@ -21,7 +21,12 @@ from app.checkpoints import (
 )
 from app.checkpoints import save as persist_checkpoint
 from app.constants import COL_ID, columns
-from app.http import ProfileFetchOutcome, ProfileSuccess
+from app.http import (
+    ProfileFailureReason,
+    ProfileFetchOutcome,
+    ProfileRequestError,
+    ProfileSuccess,
+)
 from tests.checkpoint_helpers import make_config
 
 
@@ -81,7 +86,9 @@ def test_fatal_worker_error_saves_before_nonblocking_termination(
 ) -> None:
     config = make_config(tmp_path)
     failed: Future[ProfileFetchOutcome] = Future()
-    failed.set_exception(RuntimeError("worker failed"))
+    failed.set_exception(
+        ProfileRequestError(1, ProfileFailureReason.LOGIN_RESPONSE, 200),
+    )
     executor = Mock()
     executor.submit.return_value = failed
     monkeypatch.setattr(coordinator, "ThreadPoolExecutor", Mock(return_value=executor))
@@ -92,10 +99,16 @@ def test_fatal_worker_error_saves_before_nonblocking_termination(
         lambda _config: requests.Session(),
     )
     events: list[str] = []
+    snapshots: list[CheckpointSnapshot] = []
+
+    def record_save(_paths: CheckpointPaths, snapshot: CheckpointSnapshot) -> None:
+        snapshots.append(snapshot)
+        events.append("save")
+
     monkeypatch.setattr(
         coordinator,
         "save_checkpoint",
-        lambda _paths, _snapshot: events.append("save"),
+        record_save,
     )
     monkeypatch.setattr(
         scraper,
@@ -107,6 +120,7 @@ def test_fatal_worker_error_saves_before_nonblocking_termination(
 
     executor.shutdown.assert_called_once_with(wait=False, cancel_futures=True)
     assert events == ["save", "terminate:1"]
+    assert snapshots[0].new.completed_ids == frozenset()
 
 
 def test_abort_terminates_when_salvage_checkpoint_fails_and_keeps_manifest(
@@ -149,19 +163,21 @@ def test_abort_terminates_when_salvage_checkpoint_fails_and_keeps_manifest(
     assert loaded.requested_ids == (1,)
 
 
-def test_terminate_process_flushes_logging_and_streams_before_exit(
+def test_terminate_process_does_not_block_on_logging_or_stream_flushes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
     stdout = Mock()
     stderr = Mock()
-    stdout.flush.side_effect = lambda: events.append("stdout")
-    stderr.flush.side_effect = lambda: events.append("stderr")
-    monkeypatch.setattr(logging, "shutdown", lambda: events.append("logging"))
+    shutdown = Mock()
     monkeypatch.setattr(sys, "stdout", stdout)
     monkeypatch.setattr(sys, "stderr", stderr)
+    monkeypatch.setattr(logging, "shutdown", shutdown)
     monkeypatch.setattr(os, "_exit", lambda code: events.append(f"exit:{code}"))
 
     scraper._terminate_process(7)
 
-    assert events == ["logging", "stdout", "stderr", "exit:7"]
+    assert events == ["exit:7"]
+    shutdown.assert_not_called()
+    stdout.flush.assert_not_called()
+    stderr.flush.assert_not_called()

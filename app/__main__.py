@@ -1,6 +1,5 @@
 import logging
 import os
-import sys
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -75,9 +74,6 @@ def _checkpoint_paths(config: ScrapeConfig) -> CheckpointPaths:
 
 
 def _terminate_process(exit_code: int) -> NoReturn:
-    logging.shutdown()
-    sys.stdout.flush()
-    sys.stderr.flush()
     os._exit(exit_code)
 
 
