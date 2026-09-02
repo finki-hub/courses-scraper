@@ -11,13 +11,13 @@ import requests
 from tqdm import tqdm
 
 from app.http import (
-    TRANSPORT_FAILURE_THRESHOLD,
     InstanceHttpConfig,
     ProfileEmpty,
     ProfileFetchOutcome,
     ProfileSuccess,
     ProfileTransportFailure,
     TransportFailureLimitError,
+    transport_failure_rate_exceeded,
 )
 
 logger = logging.getLogger(__name__)
@@ -47,6 +47,7 @@ def collect_profiles(
     profiles: list[dict[str, str]] = []
     requested_ids = list(profile_ids)
     transport_failures = 0
+    outcomes_seen = 0
     worker_state = _WorkerSession()
     worker_sessions: list[requests.Session] = []
     worker_sessions_lock = Lock()
@@ -59,11 +60,13 @@ def collect_profiles(
                 worker_sessions.append(worker_state.session)
         return dependencies.fetch_profile(worker_state.session, profile_id, config)
 
-    futures: dict[Future[ProfileFetchOutcome], int] = {
-        executor.submit(fetch, profile_id): profile_id for profile_id in requested_ids
-    }
+    futures: dict[Future[ProfileFetchOutcome], int] = {}
     interrupted = False
     try:
+        futures = {
+            executor.submit(fetch, profile_id): profile_id
+            for profile_id in requested_ids
+        }
         for future in tqdm(
             as_completed(futures),
             total=len(futures),
@@ -73,11 +76,12 @@ def collect_profiles(
                 outcome = future.result()
             except CancelledError:
                 continue
+            outcomes_seen += 1
             match outcome:
                 case ProfileSuccess(profile=profile):
                     profiles.append(profile)
                 case ProfileEmpty():
-                    continue
+                    pass
                 case ProfileTransportFailure(profile_id=profile_id):
                     transport_failures += 1
                     logger.warning(
@@ -85,16 +89,20 @@ def collect_profiles(
                         profile_id,
                         config.base_url,
                     )
-                    if transport_failures >= TRANSPORT_FAILURE_THRESHOLD:
-                        for pending in futures:
-                            pending.cancel()
-                        raise TransportFailureLimitError(
-                            base_url=config.base_url,
-                            failure_count=transport_failures,
-                            threshold=TRANSPORT_FAILURE_THRESHOLD,
-                        )
                 case unreachable:
                     assert_never(unreachable)
+            if transport_failure_rate_exceeded(
+                transport_failures,
+                outcomes_seen,
+                len(requested_ids),
+            ):
+                for pending in futures:
+                    pending.cancel()
+                raise TransportFailureLimitError(
+                    base_url=config.base_url,
+                    failure_count=transport_failures,
+                    outcome_count=outcomes_seen,
+                )
     except KeyboardInterrupt:
         interrupted = True
         for pending in futures:
@@ -104,12 +112,12 @@ def collect_profiles(
     finally:
         if not interrupted:
             executor.shutdown(wait=True)
-            for session in worker_sessions:
-                session.close()
+        for session in worker_sessions:
+            session.close()
     if transport_failures == len(requested_ids) and transport_failures > 0:
         raise TransportFailureLimitError(
             base_url=config.base_url,
             failure_count=transport_failures,
-            threshold=TRANSPORT_FAILURE_THRESHOLD,
+            outcome_count=len(requested_ids),
         )
     return profiles

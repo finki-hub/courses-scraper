@@ -12,15 +12,12 @@ from concurrent.futures import (
 from dataclasses import dataclass
 from typing import NoReturn, assert_never
 
-import pandas as pd
-
 from app.checkpoints import (
     CheckpointPaths,
     CheckpointSnapshot,
-    InstanceCheckpoint,
 )
 from app.checkpoints import save as save_checkpoint
-from app.constants import columns
+from app.coordinator_state import RunState, build_snapshot, frame_records
 from app.coordinator_workers import (
     InstanceWork,
     WorkerDependencies,
@@ -29,7 +26,6 @@ from app.coordinator_workers import (
     submit,
 )
 from app.http import (
-    TRANSPORT_FAILURE_THRESHOLD,
     InstanceHttpConfig,
     ProfileEmpty,
     ProfileFetchOutcome,
@@ -39,6 +35,7 @@ from app.http import (
     create_session,
     fetch_profile,
     preflight_instance,
+    transport_failure_rate_exceeded,
 )
 
 logger = logging.getLogger(__name__)
@@ -76,47 +73,15 @@ class IncompleteScrapeError(Exception):
         )
 
 
-@dataclass(frozen=True, slots=True)
-class _RunState:
-    requested_ids: tuple[int, ...]
-    profiles: dict[str, list[dict[str, str]]]
-    completed: dict[str, set[int]]
-    work_by_side: dict[str, InstanceWork]
-    future_side: dict[Future[ProfileFetchOutcome], str]
-
-
-def _records(frame: pd.DataFrame) -> list[dict[str, str]]:
-    return [
-        {str(column): str(value) for column, value in row.items()}
-        for row in frame.to_dict("records")
-    ]
-
-
-def _frame(profiles: list[dict[str, str]]) -> pd.DataFrame:
-    frame = pd.DataFrame(profiles)
-    for column in columns:
-        if column not in frame.columns:
-            frame[column] = ""
-    return frame.loc[:, columns].copy()
-
-
-def _snapshot(
-    requested_ids: tuple[int, ...],
-    profiles: dict[str, list[dict[str, str]]],
-    completed: dict[str, set[int]],
-) -> CheckpointSnapshot:
-    return CheckpointSnapshot(
-        requested_ids=requested_ids,
-        new=InstanceCheckpoint(_frame(profiles["new"]), frozenset(completed["new"])),
-        old=InstanceCheckpoint(_frame(profiles["old"]), frozenset(completed["old"])),
-    )
-
-
-def _raise_transport_failure(work: InstanceWork, failure_count: int) -> NoReturn:
+def _raise_transport_failure(
+    work: InstanceWork,
+    failure_count: int,
+    outcome_count: int,
+) -> NoReturn:
     raise TransportFailureLimitError(
         base_url=work.config.base_url,
         failure_count=failure_count,
-        threshold=TRANSPORT_FAILURE_THRESHOLD,
+        outcome_count=outcome_count,
     )
 
 
@@ -135,8 +100,8 @@ def run(plan: CoordinatorPlan) -> CheckpointSnapshot:
             "old": set(plan.initial.old.completed_ids),
         }
         profiles = {
-            "new": _records(plan.initial.new.frame),
-            "old": _records(plan.initial.old.frame),
+            "new": frame_records(plan.initial.new.frame),
+            "old": frame_records(plan.initial.old.frame),
         }
         requested_ids = plan.initial.requested_ids
     work_by_side: dict[str, InstanceWork] = {}
@@ -164,6 +129,7 @@ def run(plan: CoordinatorPlan) -> CheckpointSnapshot:
         pending = set(future_side)
         handled: set[Future[ProfileFetchOutcome]] = set()
         transport_failures = {"new": 0, "old": 0}
+        outcomes_seen = {"new": 0, "old": 0}
         completed_since_save = 0
         dirty = False
         last_checkpoint_at = plan.monotonic_clock()
@@ -179,6 +145,7 @@ def run(plan: CoordinatorPlan) -> CheckpointSnapshot:
                 outcome = future.result()
             except CancelledError:
                 return
+            outcomes_seen[side] += 1
             match outcome:
                 case ProfileSuccess(profile=profile):
                     profiles[side].append(profile)
@@ -191,13 +158,18 @@ def run(plan: CoordinatorPlan) -> CheckpointSnapshot:
                     dirty = True
                 case ProfileTransportFailure():
                     transport_failures[side] += 1
-                    if transport_failures[side] >= TRANSPORT_FAILURE_THRESHOLD:
-                        _raise_transport_failure(
-                            work_by_side[side],
-                            transport_failures[side],
-                        )
                 case unreachable:
                     assert_never(unreachable)
+            if transport_failure_rate_exceeded(
+                transport_failures[side],
+                outcomes_seen[side],
+                len(work_by_side[side].futures),
+            ):
+                _raise_transport_failure(
+                    work_by_side[side],
+                    transport_failures[side],
+                    outcomes_seen[side],
+                )
 
         while pending:
             done, pending = wait(
@@ -214,12 +186,12 @@ def run(plan: CoordinatorPlan) -> CheckpointSnapshot:
             ):
                 save_checkpoint(
                     plan.paths,
-                    _snapshot(requested_ids, profiles, completed),
+                    build_snapshot(requested_ids, profiles, completed),
                 )
                 completed_since_save = 0
                 dirty = False
                 last_checkpoint_at = now
-        snapshot = _snapshot(requested_ids, profiles, completed)
+        snapshot = build_snapshot(requested_ids, profiles, completed)
         save_checkpoint(plan.paths, snapshot)
     except KeyboardInterrupt:
         for future in future_side:
@@ -228,7 +200,7 @@ def run(plan: CoordinatorPlan) -> CheckpointSnapshot:
                     consume(future)
                 except Exception:
                     logger.exception("Completed profile worker failed during interrupt")
-        state = _RunState(
+        state = RunState(
             requested_ids,
             profiles,
             completed,
@@ -238,7 +210,7 @@ def run(plan: CoordinatorPlan) -> CheckpointSnapshot:
         return _abort(plan, state, 130)
     except Exception:
         logger.exception("Active profile work failed; saving partial checkpoint")
-        state = _RunState(
+        state = RunState(
             requested_ids,
             profiles,
             completed,
@@ -256,10 +228,10 @@ def run(plan: CoordinatorPlan) -> CheckpointSnapshot:
 
 def _abort(
     plan: CoordinatorPlan,
-    state: _RunState,
+    state: RunState,
     exit_code: int,
 ) -> CheckpointSnapshot:
-    snapshot = _snapshot(state.requested_ids, state.profiles, state.completed)
+    snapshot = build_snapshot(state.requested_ids, state.profiles, state.completed)
     try:
         cancel_nonblocking(state.work_by_side, state.future_side)
     except Exception:

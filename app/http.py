@@ -16,6 +16,7 @@ from app.profile_parser import parse_profile_html
 
 REQUEST_TIMEOUT: Final = (5, 15)
 TRANSPORT_FAILURE_THRESHOLD: Final = 3
+TRANSPORT_FAILURE_RATE_THRESHOLD: Final = 0.5
 USER_AGENT: Final = (
     "courses-scraper/0.1.0 "
     "(+https://github.com/finki-hub/courses-scraper; profile export)"
@@ -85,13 +86,32 @@ class PreflightError(Exception):
 class TransportFailureLimitError(Exception):
     base_url: str
     failure_count: int
-    threshold: int
+    outcome_count: int
+    minimum_outcomes: int = TRANSPORT_FAILURE_THRESHOLD
+    rate_threshold: float = TRANSPORT_FAILURE_RATE_THRESHOLD
 
     def __str__(self) -> str:
         return (
-            f"aborted {self.base_url} after {self.failure_count} transport failures "
-            f"(threshold: {self.threshold})"
+            f"aborted {self.base_url} after {self.failure_count} of "
+            f"{self.outcome_count} observed outcomes were transport failures "
+            f"(limit: >{self.rate_threshold:.0%} after {self.minimum_outcomes} "
+            "outcomes or batch completion)"
         )
+
+
+def transport_failure_rate_exceeded(
+    failure_count: int,
+    outcome_count: int,
+    request_count: int,
+) -> bool:
+    enough_evidence = (
+        outcome_count >= TRANSPORT_FAILURE_THRESHOLD or outcome_count == request_count
+    )
+    return (
+        failure_count > 0
+        and enough_evidence
+        and failure_count / outcome_count > TRANSPORT_FAILURE_RATE_THRESHOLD
+    )
 
 
 @dataclass(frozen=True, slots=True)
