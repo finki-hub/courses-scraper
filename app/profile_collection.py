@@ -61,7 +61,7 @@ def collect_profiles(
         return dependencies.fetch_profile(worker_state.session, profile_id, config)
 
     futures: dict[Future[ProfileFetchOutcome], int] = {}
-    interrupted = False
+    aborted = False
     try:
         futures = {
             executor.submit(fetch, profile_id): profile_id
@@ -96,21 +96,23 @@ def collect_profiles(
                 outcomes_seen,
                 len(requested_ids),
             ):
+                aborted = True
                 for pending in futures:
                     pending.cancel()
+                executor.shutdown(wait=False, cancel_futures=True)
                 raise TransportFailureLimitError(
                     base_url=config.base_url,
                     failure_count=transport_failures,
                     outcome_count=outcomes_seen,
                 )
     except KeyboardInterrupt:
-        interrupted = True
+        aborted = True
         for pending in futures:
             pending.cancel()
         executor.shutdown(wait=False, cancel_futures=True)
         raise
     finally:
-        if not interrupted:
+        if not aborted:
             executor.shutdown(wait=True)
         for session in worker_sessions:
             session.close()

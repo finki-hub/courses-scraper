@@ -97,6 +97,37 @@ def test_transport_failure_threshold_aborts_instance(
     assert caught.value.minimum_outcomes == TRANSPORT_FAILURE_THRESHOLD
 
 
+def test_transport_failure_threshold_shuts_down_without_waiting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given enough completed failures to abort while another request is pending.
+    completed: list[Future[ProfileTransportFailure]] = []
+    for profile_id in range(1, TRANSPORT_FAILURE_THRESHOLD + 1):
+        future: Future[ProfileTransportFailure] = Future()
+        future.set_result(ProfileTransportFailure(profile_id))
+        completed.append(future)
+    pending: Future[ProfileTransportFailure] = Future()
+    executor = Mock()
+    executor.submit.side_effect = [*completed, pending]
+    monkeypatch.setattr(
+        profile_collection,
+        "ThreadPoolExecutor",
+        Mock(return_value=executor),
+    )
+    monkeypatch.setattr(profile_collection, "as_completed", lambda _futures: completed)
+
+    # When the observed transport failures exceed the abort threshold.
+    with pytest.raises(TransportFailureLimitError):
+        scraper.get_profiles(
+            _config(threads=4),
+            list(range(1, TRANSPORT_FAILURE_THRESHOLD + 2)),
+        )
+
+    # Then pending work is cancelled without waiting for a stuck worker.
+    executor.shutdown.assert_called_once_with(wait=False, cancel_futures=True)
+    assert pending.cancelled()
+
+
 def test_transport_failure_threshold_uses_observed_rate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
