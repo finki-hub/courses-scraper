@@ -12,11 +12,13 @@ class LoginPageError(Exception):
 def parse_profile_html(html: str, selectors: Selectors) -> dict[str, str]:
     soup = BeautifulSoup(html, "lxml")
     login_form = soup.select_one("form#login")
-    if (
-        login_form is not None
-        and login_form.select_one('input[name="username"]') is not None
-        and login_form.select_one('input[name="password"]') is not None
-    ):
+    if login_form is None:
+        username_input = None
+        password_input = None
+    else:
+        username_input = login_form.select_one('input[name="username"]')
+        password_input = login_form.select_one('input[name="password"]')
+    if username_input is not None and password_input is not None:
         raise LoginPageError
     profile = {
         COL_NAME: _selected_text(soup, selectors["name_selector"]),
