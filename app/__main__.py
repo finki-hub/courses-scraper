@@ -66,14 +66,6 @@ def get_profiles(
     )
 
 
-def reorder_columns(df: pd.DataFrame, col_order: list[str]) -> pd.DataFrame:
-    for column in col_order:
-        if column not in df.columns:
-            df[column] = ""
-
-    return df.loc[:, col_order].copy()
-
-
 def _checkpoint_paths(config: ScrapeConfig) -> CheckpointPaths:
     return CheckpointPaths(
         manifest=config.checkpoint_new.parent / "checkpoint_manifest.json",
