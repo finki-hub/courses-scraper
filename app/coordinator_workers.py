@@ -52,9 +52,15 @@ def submit(
                 sessions.append(worker_state.session)
         return dependencies.fetch_profile(worker_state.session, profile_id, config)
 
-    futures = {
-        executor.submit(fetch, profile_id): profile_id for profile_id in profile_ids
-    }
+    try:
+        futures = {
+            executor.submit(fetch, profile_id): profile_id for profile_id in profile_ids
+        }
+    except RuntimeError:
+        executor.shutdown(wait=True, cancel_futures=True)
+        for session in sessions:
+            session.close()
+        raise
     return InstanceWork(config, executor, futures, sessions)
 
 
