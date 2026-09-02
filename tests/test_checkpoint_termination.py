@@ -80,6 +80,48 @@ def test_interrupt_shuts_down_nonblocking_then_saves_before_termination(
     assert events == ["save", "terminate:130"]
 
 
+def test_interrupt_after_submission_salvages_completed_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = make_config(tmp_path)
+    completed: Future[ProfileFetchOutcome] = Future()
+    completed.set_result(ProfileSuccess({COL_ID: "1"}))
+    executor = Mock()
+    executor.submit.return_value = completed
+    monkeypatch.setattr(coordinator, "ThreadPoolExecutor", Mock(return_value=executor))
+    monkeypatch.setattr(coordinator, "preflight_instance", Mock())
+    monkeypatch.setattr(
+        coordinator,
+        "create_session",
+        lambda _config: requests.Session(),
+    )
+    save = Mock()
+    terminate = Mock()
+    monkeypatch.setattr(coordinator, "save_checkpoint", save)
+
+    snapshot = coordinator.run(
+        coordinator.CoordinatorPlan(
+            http_new=config.http_new,
+            http_old=config.http_old,
+            profile_ids_new=[1],
+            profile_ids_old=[],
+            paths=CheckpointPaths.for_directory(tmp_path),
+            initial=None,
+            batch_size=100,
+            poll_interval=0.25,
+            checkpoint_interval=30.0,
+            monotonic_clock=Mock(side_effect=KeyboardInterrupt),
+            terminate=terminate,
+        ),
+    )
+
+    assert snapshot.new.completed_ids == frozenset({1})
+    executor.shutdown.assert_called_once_with(wait=False, cancel_futures=True)
+    save.assert_called_once()
+    terminate.assert_called_once_with(130)
+
+
 def test_fatal_worker_error_saves_before_nonblocking_termination(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

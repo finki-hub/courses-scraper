@@ -4,13 +4,10 @@ import logging
 from collections.abc import Callable, Sequence
 from concurrent.futures import (
     FIRST_COMPLETED,
-    CancelledError,
-    Future,
     ThreadPoolExecutor,
     wait,
 )
 from dataclasses import dataclass
-from typing import NoReturn, assert_never
 
 from tqdm import tqdm
 
@@ -19,9 +16,9 @@ from app.checkpoints import (
     CheckpointSnapshot,
 )
 from app.checkpoints import save as save_checkpoint
+from app.coordinator_progress import ProgressState, abort_state, consume_future
 from app.coordinator_state import RunState, build_snapshot, frame_records
 from app.coordinator_workers import (
-    InstanceWork,
     WorkerDependencies,
     cancel_nonblocking,
     shutdown_waiting,
@@ -29,15 +26,9 @@ from app.coordinator_workers import (
 )
 from app.http import (
     InstanceHttpConfig,
-    ProfileEmpty,
-    ProfileFetchOutcome,
-    ProfileSuccess,
-    ProfileTransportFailure,
-    TransportFailureLimitError,
     create_session,
     fetch_profile,
     preflight_instance,
-    transport_failure_rate_exceeded,
 )
 
 logger = logging.getLogger(__name__)
@@ -75,19 +66,7 @@ class IncompleteScrapeError(Exception):
         )
 
 
-def _raise_transport_failure(
-    work: InstanceWork,
-    failure_count: int,
-    outcome_count: int,
-) -> NoReturn:
-    raise TransportFailureLimitError(
-        base_url=work.config.base_url,
-        failure_count=failure_count,
-        outcome_count=outcome_count,
-    )
-
-
-def run(plan: CoordinatorPlan) -> CheckpointSnapshot:
+def _initial_progress(plan: CoordinatorPlan) -> ProgressState:
     completed: dict[str, set[int]]
     profiles: dict[str, list[dict[str, str]]]
     if plan.initial is None:
@@ -106,132 +85,132 @@ def run(plan: CoordinatorPlan) -> CheckpointSnapshot:
             "old": frame_records(plan.initial.old.frame),
         }
         requested_ids = plan.initial.requested_ids
-    work_by_side: dict[str, InstanceWork] = {}
-    future_side: dict[Future[ProfileFetchOutcome], str] = {}
-    sides = (
-        ("new", plan.http_new, plan.profile_ids_new),
-        ("old", plan.http_old, plan.profile_ids_old),
+    return ProgressState(
+        requested_ids,
+        profiles,
+        completed,
+        {},
+        {},
+        0.0,
     )
-    for _, config, profile_ids in sides:
-        if not profile_ids:
-            continue
+
+
+def _active_sides(
+    plan: CoordinatorPlan,
+) -> tuple[tuple[str, InstanceHttpConfig, Sequence[int]], ...]:
+    return tuple(
+        side
+        for side in (
+            ("new", plan.http_new, plan.profile_ids_new),
+            ("old", plan.http_old, plan.profile_ids_old),
+        )
+        if side[2]
+    )
+
+
+def _preflight(
+    sides: tuple[tuple[str, InstanceHttpConfig, Sequence[int]], ...],
+) -> None:
+    for _, config, _ in sides:
         with create_session(config) as session:
             preflight_instance(session, config)
-    dependencies = WorkerDependencies(ThreadPoolExecutor, create_session, fetch_profile)
-    try:
-        for side, config, profile_ids in sides:
-            if not profile_ids:
-                continue
-            work_by_side[side] = submit(config, profile_ids, dependencies)
-        future_side = {
+
+
+def _submit_work(
+    sides: tuple[tuple[str, InstanceHttpConfig, Sequence[int]], ...],
+    state: ProgressState,
+    dependencies: WorkerDependencies,
+) -> None:
+    for side, config, profile_ids in sides:
+        state.work_by_side[side] = submit(config, profile_ids, dependencies)
+    state.future_side.update(
+        {
             future: side
-            for side, work in work_by_side.items()
+            for side, work in state.work_by_side.items()
             for future in work.futures
-        }
-        pending = set(future_side)
-        handled: set[Future[ProfileFetchOutcome]] = set()
-        transport_failures = {"new": 0, "old": 0}
-        outcomes_seen = {"new": 0, "old": 0}
-        completed_since_save = 0
-        dirty = False
-        last_checkpoint_at = plan.monotonic_clock()
+        },
+    )
 
-        def consume(future: Future[ProfileFetchOutcome]) -> None:
-            nonlocal completed_since_save, dirty
-            if future in handled:
-                return
-            handled.add(future)
-            side = future_side[future]
-            profile_id = work_by_side[side].futures[future]
-            try:
-                outcome = future.result()
-            except CancelledError:
-                return
-            outcomes_seen[side] += 1
-            match outcome:
-                case ProfileSuccess(profile=profile):
-                    profiles[side].append(profile)
-                    completed[side].add(profile_id)
-                    completed_since_save += 1
-                    dirty = True
-                case ProfileEmpty():
-                    completed[side].add(profile_id)
-                    completed_since_save += 1
-                    dirty = True
-                case ProfileTransportFailure():
-                    transport_failures[side] += 1
-                case unreachable:
-                    assert_never(unreachable)
-            if transport_failure_rate_exceeded(
-                transport_failures[side],
-                outcomes_seen[side],
-                len(work_by_side[side].futures),
+
+def _save_progress(
+    plan: CoordinatorPlan,
+    state: ProgressState,
+    now: float,
+) -> None:
+    save_checkpoint(
+        plan.paths,
+        build_snapshot(state.requested_ids, state.profiles, state.completed),
+    )
+    state.completed_since_save = 0
+    state.dirty = False
+    state.last_checkpoint_at = now
+
+
+def _collect_pending(
+    plan: CoordinatorPlan,
+    state: ProgressState,
+) -> CheckpointSnapshot:
+    pending = set(state.future_side)
+    with tqdm(total=len(pending)) as progress:
+        while pending:
+            done, pending = wait(
+                pending,
+                timeout=plan.poll_interval,
+                return_when=FIRST_COMPLETED,
+            )
+            now = plan.monotonic_clock()
+            for future in done:
+                consume_future(future, state)
+                progress.update()
+                if state.dirty and state.completed_since_save >= plan.batch_size:
+                    _save_progress(plan, state, now)
+            if (
+                state.dirty
+                and now - state.last_checkpoint_at >= plan.checkpoint_interval
             ):
-                _raise_transport_failure(
-                    work_by_side[side],
-                    transport_failures[side],
-                    outcomes_seen[side],
-                )
+                _save_progress(plan, state, now)
+    snapshot = build_snapshot(state.requested_ids, state.profiles, state.completed)
+    save_checkpoint(plan.paths, snapshot)
+    return snapshot
 
-        with tqdm(total=len(pending)) as progress:
-            while pending:
-                done, pending = wait(
-                    pending,
-                    timeout=plan.poll_interval,
-                    return_when=FIRST_COMPLETED,
-                )
-                now = plan.monotonic_clock()
-                for future in done:
-                    consume(future)
-                    progress.update()
-                    if dirty and completed_since_save >= plan.batch_size:
-                        save_checkpoint(
-                            plan.paths,
-                            build_snapshot(requested_ids, profiles, completed),
-                        )
-                        completed_since_save = 0
-                        dirty = False
-                        last_checkpoint_at = now
-                if dirty and now - last_checkpoint_at >= plan.checkpoint_interval:
-                    save_checkpoint(
-                        plan.paths,
-                        build_snapshot(requested_ids, profiles, completed),
-                    )
-                    completed_since_save = 0
-                    dirty = False
-                    last_checkpoint_at = now
-        snapshot = build_snapshot(requested_ids, profiles, completed)
-        save_checkpoint(plan.paths, snapshot)
-    except KeyboardInterrupt:
-        for future in future_side:
-            if future.done():
-                try:
-                    consume(future)
-                except Exception:
-                    logger.exception("Completed profile worker failed during interrupt")
-        state = RunState(
-            requested_ids,
-            profiles,
-            completed,
-            work_by_side,
-            future_side,
-        )
-        return _abort(plan, state, 130)
-    except Exception:
-        logger.exception("Active profile work failed; saving partial checkpoint")
-        state = RunState(
-            requested_ids,
-            profiles,
-            completed,
-            work_by_side,
-            future_side,
-        )
-        return _abort(plan, state, 1)
-    shutdown_waiting(work_by_side)
+
+def _salvage_completed(state: ProgressState) -> None:
+    for future in state.future_side:
+        if future.done():
+            try:
+                consume_future(future, state)
+            except Exception:
+                logger.exception("Completed profile worker failed during interrupt")
+
+
+def _ensure_complete(
+    plan: CoordinatorPlan,
+    snapshot: CheckpointSnapshot,
+) -> None:
     remaining_new = frozenset(plan.profile_ids_new) - snapshot.new.completed_ids
     remaining_old = frozenset(plan.profile_ids_old) - snapshot.old.completed_ids
     if remaining_new or remaining_old:
         raise IncompleteScrapeError(remaining_new, remaining_old)
+
+
+def run(plan: CoordinatorPlan) -> CheckpointSnapshot:
+    state = _initial_progress(plan)
+    sides = _active_sides(plan)
+    _preflight(sides)
+    dependencies = WorkerDependencies(ThreadPoolExecutor, create_session, fetch_profile)
+    snapshot: CheckpointSnapshot
+    try:
+        _submit_work(sides, state, dependencies)
+        state.last_checkpoint_at = plan.monotonic_clock()
+        snapshot = _collect_pending(plan, state)
+    except KeyboardInterrupt:
+        _salvage_completed(state)
+        return _abort(plan, abort_state(state), 130)
+    except Exception:
+        logger.exception("Active profile work failed; saving partial checkpoint")
+        return _abort(plan, abort_state(state), 1)
+    shutdown_waiting(state.work_by_side)
+    _ensure_complete(plan, snapshot)
     return snapshot
 
 

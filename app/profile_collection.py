@@ -39,6 +39,28 @@ class _WorkerSession(local):
         self.session = None
 
 
+def _record_outcome(
+    outcome: ProfileFetchOutcome,
+    profiles: list[dict[str, str]],
+    base_url: str,
+) -> int:
+    match outcome:
+        case ProfileSuccess(profile=profile):
+            profiles.append(profile)
+            return 0
+        case ProfileEmpty():
+            return 0
+        case ProfileTransportFailure(profile_id=profile_id):
+            logger.warning(
+                "Transport failed for profile %d from %s",
+                profile_id,
+                base_url,
+            )
+            return 1
+        case unreachable:
+            assert_never(unreachable)
+
+
 def collect_profiles(
     config: InstanceHttpConfig,
     profile_ids: Sequence[int],
@@ -77,20 +99,11 @@ def collect_profiles(
             except CancelledError:
                 continue
             outcomes_seen += 1
-            match outcome:
-                case ProfileSuccess(profile=profile):
-                    profiles.append(profile)
-                case ProfileEmpty():
-                    pass
-                case ProfileTransportFailure(profile_id=profile_id):
-                    transport_failures += 1
-                    logger.warning(
-                        "Transport failed for profile %d from %s",
-                        profile_id,
-                        config.base_url,
-                    )
-                case unreachable:
-                    assert_never(unreachable)
+            transport_failures += _record_outcome(
+                outcome,
+                profiles,
+                config.base_url,
+            )
             if transport_failure_rate_exceeded(
                 transport_failures,
                 outcomes_seen,
