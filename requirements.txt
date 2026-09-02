@@ -1,5 +1,5 @@
-requests
-beautifulsoup4
-lxml
-pandas
-tqdm
+requests>=2.34.2,<3
+beautifulsoup4>=4.15.0,<5
+lxml>=6.1.2,<7
+pandas>=3.0.5,<4
+tqdm>=4.70.0,<5

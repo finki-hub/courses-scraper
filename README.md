@@ -10,7 +10,11 @@ Script for scraping all profiles from FCSE Courses (both instances) into CSV for
 
 ## Installation
 
-Python 3.13 or higher is required and `uv` is optional.
+Python 3.13.x is required. For a reproducible install from `uv.lock`, run:
+
+`uv sync --locked`
+
+Alternatively, install the bounded runtime dependencies with pip:
 
 `python -m pip install -r requirements.txt`
 
@@ -56,6 +60,11 @@ run rather than producing an empty successful export. A batch smaller than three
 also aborts when every request fails at the transport boundary. HTTP responses
 that contain no exportable profile remain ordinary empty results.
 
+Progress is checkpointed after 100 completed profiles, every 30 seconds while
+new progress is pending, and on interruption. Re-running with the same profile
+ID set resumes both instances independently. Invalid or mismatched checkpoint
+data fails closed instead of being silently discarded.
+
 For example:
 
 `python -m app -m 16500`
@@ -76,6 +85,9 @@ The CSV contains:
 
 Profiles with a missing, malformed, one-sided, or duplicated email remain separate
 rows. Names are never used as identity keys because they are not guaranteed unique.
+Formula-like spreadsheet cells are apostrophe-prefixed in the final CSV only;
+raw checkpoint values remain unchanged. Empty runs never replace an existing
+output or delete recovery checkpoints.
 
 ## License
 
