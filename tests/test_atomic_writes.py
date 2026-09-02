@@ -1,6 +1,7 @@
 import os
 import stat
 from pathlib import Path
+from unittest.mock import Mock
 
 import pandas as pd
 import pytest
@@ -73,3 +74,15 @@ def test_atomic_csv_write_preserves_destination_when_serialization_fails(
     # Then the prior destination remains intact and partial files are removed.
     assert destination.read_text(encoding="utf-8") == "original"
     assert set(tmp_path.iterdir()) == {destination}
+
+
+def test_atomic_csv_write_fsyncs_temporary_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fsync = Mock()
+    monkeypatch.setattr(os, "fsync", fsync)
+
+    write_csv_atomically(pd.DataFrame({"ID": [1]}), tmp_path / "profiles.csv")
+
+    assert fsync.call_count >= 1
