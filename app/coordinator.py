@@ -12,6 +12,8 @@ from concurrent.futures import (
 from dataclasses import dataclass
 from typing import NoReturn, assert_never
 
+from tqdm import tqdm
+
 from app.checkpoints import (
     CheckpointPaths,
     CheckpointSnapshot,
@@ -171,26 +173,33 @@ def run(plan: CoordinatorPlan) -> CheckpointSnapshot:
                     outcomes_seen[side],
                 )
 
-        while pending:
-            done, pending = wait(
-                pending,
-                timeout=plan.poll_interval,
-                return_when=FIRST_COMPLETED,
-            )
-            for future in done:
-                consume(future)
-            now = plan.monotonic_clock()
-            if dirty and (
-                completed_since_save >= plan.batch_size
-                or now - last_checkpoint_at >= plan.checkpoint_interval
-            ):
-                save_checkpoint(
-                    plan.paths,
-                    build_snapshot(requested_ids, profiles, completed),
+        with tqdm(total=len(pending)) as progress:
+            while pending:
+                done, pending = wait(
+                    pending,
+                    timeout=plan.poll_interval,
+                    return_when=FIRST_COMPLETED,
                 )
-                completed_since_save = 0
-                dirty = False
-                last_checkpoint_at = now
+                now = plan.monotonic_clock()
+                for future in done:
+                    consume(future)
+                    progress.update()
+                    if dirty and completed_since_save >= plan.batch_size:
+                        save_checkpoint(
+                            plan.paths,
+                            build_snapshot(requested_ids, profiles, completed),
+                        )
+                        completed_since_save = 0
+                        dirty = False
+                        last_checkpoint_at = now
+                if dirty and now - last_checkpoint_at >= plan.checkpoint_interval:
+                    save_checkpoint(
+                        plan.paths,
+                        build_snapshot(requested_ids, profiles, completed),
+                    )
+                    completed_since_save = 0
+                    dirty = False
+                    last_checkpoint_at = now
         snapshot = build_snapshot(requested_ids, profiles, completed)
         save_checkpoint(plan.paths, snapshot)
     except KeyboardInterrupt:
