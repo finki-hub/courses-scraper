@@ -10,9 +10,10 @@ from app.constants import (
     COL_PROFILE,
     COURSES_COUNT,
     base_urls,
+    columns,
 )
 
-__all__ = ["merge_profiles"]
+__all__ = ["MERGED_COLUMNS", "merge_profiles"]
 
 _EMAIL_KEY = "_email_key"
 _ID_OLD = f"{COL_ID}_old"
@@ -23,6 +24,22 @@ _EMAIL_PATTERN: Final = (
     r"[a-z0-9!#$%&'*+/=?^_`{|}~-]+"
     r"(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*"
     r"@(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}"
+)
+MERGED_COLUMNS: Final = (
+    _ID_OLD,
+    _ID_NEW,
+    COL_NAME,
+    COL_MAIL,
+    COL_COURSES,
+    COURSES_COUNT,
+    _PROFILE_OLD,
+    _PROFILE_NEW,
+    *sorted(
+        f"{column}_{side}"
+        for column in columns
+        if column not in {COL_ID, COL_NAME, COL_MAIL, COL_COURSES}
+        for side in ("old", "new")
+    ),
 )
 
 
@@ -43,14 +60,17 @@ def _normalize_side(
     df: pd.DataFrame,
     side: Literal["old", "new"],
 ) -> pd.DataFrame:
-    ids = pd.to_numeric(_series(df, COL_ID), errors="raise")
+    normalized_input = df.reindex(columns=columns).copy(deep=True)
+    ids = pd.to_numeric(_series(normalized_input, COL_ID), errors="raise")
     if not isinstance(ids, pd.Series):
         raise TypeError("Expected profile IDs to remain a Series")
     ids = ids.astype("Int64")
     if ids.isna().any() or (ids <= 0).any() or ids.duplicated().any():
         raise pd.errors.MergeError(f"{side} profile IDs must be positive and unique")
 
-    normalized = df.rename(columns={column: f"{column}_{side}" for column in df})
+    normalized = normalized_input.rename(
+        columns={column: f"{column}_{side}" for column in normalized_input},
+    )
     normalized[f"{COL_ID}_{side}"] = ids
     emails = normalized[f"{COL_MAIL}_{side}"].fillna("").astype(str).str.strip()
     normalized_emails = emails.str.lower()
@@ -111,40 +131,6 @@ def _add_profile_urls(merged: pd.DataFrame) -> None:
         )
 
 
-def _column_order(merged: pd.DataFrame) -> list[str]:
-    excluded = {
-        _EMAIL_KEY,
-        _ID_OLD,
-        _ID_NEW,
-        _PROFILE_OLD,
-        _PROFILE_NEW,
-        COL_NAME,
-        COL_MAIL,
-        COL_COURSES,
-        COURSES_COUNT,
-        f"{COL_NAME}_old",
-        f"{COL_NAME}_new",
-        f"{COL_MAIL}_old",
-        f"{COL_MAIL}_new",
-        f"{COL_COURSES}_old",
-        f"{COL_COURSES}_new",
-    }
-    remaining: list[str] = sorted(
-        str(column) for column in merged if column not in excluded
-    )
-    return [
-        _ID_OLD,
-        _ID_NEW,
-        COL_NAME,
-        COL_MAIL,
-        COL_COURSES,
-        COURSES_COUNT,
-        _PROFILE_OLD,
-        _PROFILE_NEW,
-        *remaining,
-    ]
-
-
 def merge_profiles(df_old: pd.DataFrame, df_new: pd.DataFrame) -> pd.DataFrame:
     old = _normalize_side(df_old, "old")
     new = _normalize_side(df_new, "new")
@@ -192,5 +178,5 @@ def merge_profiles(df_old: pd.DataFrame, df_new: pd.DataFrame) -> pd.DataFrame:
         ).drop(columns=["_sort_id_new", "_sort_id_old"]),
     )
     return _dataframe(
-        merged.loc[:, _column_order(merged)].reset_index(drop=True),
+        merged.loc[:, list(MERGED_COLUMNS)].reset_index(drop=True),
     )
