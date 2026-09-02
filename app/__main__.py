@@ -26,7 +26,7 @@ from app.constants import (
 )
 from app.coordinator import CoordinatorPlan
 from app.coordinator import run as run_coordinator
-from app.csv_io import write_csv_atomically
+from app.export import export_profiles
 from app.http import (
     InstanceHttpConfig,
     create_session,
@@ -188,7 +188,7 @@ def _finalize_output(
     config: ScrapeConfig,
 ) -> None:
     df_merged = merge_profiles(df_old, df_new)
-    write_csv_atomically(df_merged, output_path / output_file)
+    export_profiles(df_merged, output_path / output_file)
 
     clear_checkpoints(_checkpoint_paths(config))
 
