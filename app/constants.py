@@ -24,49 +24,39 @@ COL_PROFILE = "Profile"
 COURSES_COUNT = "Courses Count"
 
 
-class Selectors(TypedDict):
+class _BaseSelectors(TypedDict):
     name_selector: str
     description_selector: str
     description_images_selector: str
     courses_selector: str
-    last_access_selector: str
     details_selector: str
     sections_selector: str
-    interests_selector: str
     attribute_selector: str
     avatar_selector: str
 
 
-_base_selectors = {
-    "description_selector": "#region-main > div > div > div.description",
-    "description_images_selector": "#region-main > div > div > div.description img",
-    "courses_selector": "ul > li > dl > dd > ul > li",
-    "details_selector": "ul > li.contentnode",
-    "sections_selector": "#region-main > div > div > div.profile_tree > section",
+class Selectors(_BaseSelectors):
+    interests_selector: str
+
+
+_base_selectors: _BaseSelectors = {
+    "name_selector": ".page-header-headings h1",
+    "description_selector": "#region-main .description",
+    "description_images_selector": "#region-main .description img",
+    "courses_selector": "dd ul li",
+    "details_selector": "li.contentnode",
+    "sections_selector": "#region-main .profile_tree section",
     "attribute_selector": "h3.lead",
-    "avatar_selector": ".page-header-image > img",
+    "avatar_selector": ".page-header-image img",
 }
 
 selectors_new: Selectors = {
-    **_base_selectors,  # type: ignore[typeddict-item]
-    "name_selector": (
-        "#page-header > div > div > div > div.d-flex.align-items-center > "
-        "div.me-auto > div > div.page-header-headings > h1"
-    ),
-    "last_access_selector": (
-        "#region-main > div > div > div.profile_tree > section:nth-child(4) > "
-        "div > ul > li > dl > dd"
-    ),
+    **_base_selectors,
     "interests_selector": "dl > dd > div > ul > li > a",
 }
 
 selectors_old: Selectors = {
-    **_base_selectors,  # type: ignore[typeddict-item]
-    "name_selector": (
-        "#page-header > div > div > div > div.d-flex.align-items-center > "
-        "div.mr-auto > div > div.page-header-headings > h1"
-    ),
-    "last_access_selector": "ul > li > dl > dd",
+    **_base_selectors,
     "interests_selector": "li:not(.visibleifjs)",
 }
 
@@ -87,7 +77,7 @@ fields: dict[str, str] = {
     "country": "Country",
     "city/town": "City",
     "moodlenet profile": "MoodleNet",
-    "avatar": "Avatar",
+    "timezone": "Timezone",
 }
 
 columns: list[str] = [
@@ -101,6 +91,7 @@ columns: list[str] = [
     "Images",
     "Country",
     "City",
+    "Timezone",
     "Interests",
     "Web",
     "MoodleNet",

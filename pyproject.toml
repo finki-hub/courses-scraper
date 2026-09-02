@@ -73,7 +73,15 @@ select = [
     "LOG",
     "RUF",
 ]
-ignore = ["PLR2004", "PLR0912", "PLR0915", "TRY003", "PLR0911", "RET504"]
+ignore = [
+    "COM812",
+    "PLR2004",
+    "PLR0912",
+    "PLR0915",
+    "TRY003",
+    "PLR0911",
+    "RET504",
+]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["S101", "SLF001"]

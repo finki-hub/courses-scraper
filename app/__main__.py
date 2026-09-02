@@ -1,425 +1,118 @@
-import argparse
 import logging
-import sys
+import os
 import time
-from concurrent.futures import (
-    CancelledError,
-    Future,
-    ThreadPoolExecutor,
-    as_completed,
-)
-from concurrent.futures import (
-    TimeoutError as FuturesTimeoutError,
-)
+from collections.abc import Sequence
 from dataclasses import dataclass
-from http import HTTPStatus
 from pathlib import Path
+from typing import Final, NoReturn
 
 import pandas as pd
-import requests
-from bs4 import BeautifulSoup, Tag
-from requests.adapters import HTTPAdapter
-from tqdm import tqdm
-from urllib3.util.retry import Retry
 
+from app.checkpoints import (
+    CheckpointPaths,
+    CheckpointSnapshot,
+    InstanceCheckpoint,
+)
+from app.checkpoints import clear as clear_checkpoints
+from app.checkpoints import load as load_checkpoint
+from app.checkpoints import save as save_checkpoint
+from app.cli import parse_cli
 from app.constants import (
-    COL_COURSES,
     COL_ID,
-    COL_NAME,
-    Selectors,
     base_urls,
-    columns,
-    fields,
     selectors_new,
     selectors_old,
 )
-from app.csv_io import write_csv_atomically
+from app.coordinator import CoordinatorPlan
+from app.coordinator import run as run_coordinator
+from app.export import export_profiles
+from app.http import (
+    InstanceHttpConfig,
+    create_session,
+    fetch_profile,
+)
+from app.profile_collection import (
+    ProfileCollectionDependencies,
+    collect_profiles,
+)
 from app.profile_merge import merge_profiles
 
 logger = logging.getLogger(__name__)
+CHECKPOINT_BATCH_SIZE: Final = 100
+CHECKPOINT_INTERVAL_SECONDS: Final = 30.0
+POLL_INTERVAL_SECONDS: Final = 0.25
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class ScrapeConfig:
-    session_new: requests.Session
-    session_old: requests.Session
-    threads: int
+    http_new: InstanceHttpConfig
+    http_old: InstanceHttpConfig
     checkpoint_new: Path
     checkpoint_old: Path
 
 
-def get_profile_name(element: Tag, selectors: Selectors) -> str:
-    name = element.select_one(selectors["name_selector"])
-
-    if name is None:
-        return ""
-
-    return name.text.strip()
-
-
-def get_profile_avatar(element: Tag, selectors: Selectors) -> str:
-    avatar = element.select_one(selectors["avatar_selector"])
-
-    if avatar is None:
-        return ""
-
-    classes = avatar.get("class")
-    if isinstance(classes, list) and "defaultuserpic" in classes:
-        return ""
-
-    src = avatar.get("src")
-    if not isinstance(src, str):
-        return ""
-
-    return src
-
-
-def get_profile_description(element: Tag, selectors: Selectors) -> str:
-    description = element.select_one(selectors["description_selector"])
-
-    if description is None:
-        return ""
-
-    return description.text.strip()
-
-
-def get_profile_description_images(element: Tag, selectors: Selectors) -> str:
-    images = element.select(selectors["description_images_selector"])
-
-    return "\n".join(
-        src for image in images if (src := image.get("src")) and isinstance(src, str)
-    )
-
-
-def get_profile_details(element: Tag, selectors: Selectors) -> dict[str, str]:
-    attributes: dict[str, str] = {}
-    details = element.select(selectors["details_selector"])
-
-    for detail in details:
-        field_element = detail.dt
-        value_element = detail.dd
-
-        if field_element is None or value_element is None:
-            continue
-
-        field = field_element.text.strip().lower()
-
-        if field in fields:
-            value = value_element.text.strip()
-
-            if field == "interests":
-                interests = value_element.select(selectors["interests_selector"])
-                value = "\n".join(interest.text.strip() for interest in interests)
-            elif field == "email address":
-                value = value.replace(" (Visible to other course participants)", "")
-
-            attributes[fields[field]] = value
-
-    return attributes
-
-
-def get_profile_courses(element: Tag, selectors: Selectors) -> str:
-    courses_tags = element.select(selectors["courses_selector"])
-    courses = [li.text for li in courses_tags]
-
-    return "\n".join(courses)
-
-
-def get_profile_last_access(element: Tag, selectors: Selectors) -> str:
-    last_access = element.select_one(selectors["last_access_selector"])
-
-    if last_access is None:
-        return ""
-
-    return last_access.text.replace("\xa0", ";")
-
-
-def get_profile_attributes(element: Tag, selectors: Selectors) -> dict[str, str]:
-    profile: dict[str, str] = {}
-    sections = element.select(selectors["sections_selector"])
-
-    if len(sections) == 0:
-        return {}
-
-    profile[COL_NAME] = get_profile_name(element, selectors)
-    profile["Description"] = get_profile_description(element, selectors)
-    profile["Images"] = get_profile_description_images(element, selectors)
-    profile["Avatar"] = get_profile_avatar(element, selectors)
-
-    for section in sections:
-        attribute = section.select_one(selectors["attribute_selector"])
-
-        if attribute is None:
-            continue
-
-        if attribute.text == "User details":
-            profile |= get_profile_details(section, selectors)
-        elif attribute.text == "Course details":
-            profile[COL_COURSES] = get_profile_courses(section, selectors)
-        elif attribute.text == "Login activity":
-            profile["Last Access"] = get_profile_last_access(section, selectors)
-
-    return profile
-
-
-def get_profile(
-    session: requests.Session,
-    profile_id: int,
-    base_url: str,
-    selectors: Selectors,
-) -> dict[str, str]:
-    profile_url = f"{base_url}/user/profile.php?id={profile_id}&showallcourses=1"
-
-    try:
-        response = session.get(profile_url, timeout=(5, 15))
-    except requests.exceptions.RequestException:
-        logger.warning("Request failed for profile %d", profile_id, exc_info=True)
-        return {}
-
-    if response.status_code != HTTPStatus.OK:
-        return {}
-
-    soup = BeautifulSoup(response.text, "lxml")
-
-    try:
-        profile = get_profile_attributes(soup, selectors)
-    except (AttributeError, KeyError, TypeError):
-        logger.warning("Failed to parse profile %d", profile_id, exc_info=True)
-        return {}
-
-    if profile:
-        profile[COL_ID] = str(profile_id)
-
-    return profile
-
-
 def get_profiles(
-    session: requests.Session,
-    profile_ids: range | list[int],
-    threads: int,
-    base_url: str,
-    selectors: Selectors,
+    config: InstanceHttpConfig,
+    profile_ids: Sequence[int],
 ) -> list[dict[str, str]]:
-    profiles: list[dict[str, str]] = []
-    failed = 0
-
-    with ThreadPoolExecutor(max_workers=threads) as executor:
-        futures = {
-            executor.submit(get_profile, session, pid, base_url, selectors): pid
-            for pid in profile_ids
-        }
-
-        try:
-            for future in tqdm(
-                as_completed(futures),
-                total=len(futures),
-                desc=base_url.rsplit("//", maxsplit=1)[-1],
-            ):
-                try:
-                    result = future.result()
-                except CancelledError:
-                    pid = futures[future]
-                    logger.info("Profile %d fetch cancelled", pid)
-                    failed += 1
-                    continue
-                except Exception:
-                    pid = futures[future]
-                    logger.warning(
-                        "Unexpected error for profile %d",
-                        pid,
-                        exc_info=True,
-                    )
-                    failed += 1
-                    continue
-                if result:
-                    profiles.append(result)
-                else:
-                    failed += 1
-        except KeyboardInterrupt:
-            logger.info(
-                "Interrupted — cancelling pending futures and returning "
-                "%d profiles collected so far from %s",
-                len(profiles),
-                base_url,
-            )
-            for pending in futures:
-                pending.cancel()
-            raise
-
-    logger.info(
-        "Scraped %d profiles from %s (%d empty/failed)",
-        len(profiles),
-        base_url,
-        failed,
-    )
-    return profiles
-
-
-def reorder_columns(df: pd.DataFrame, col_order: list[str]) -> pd.DataFrame:
-    for column in col_order:
-        if column not in df.columns:
-            df[column] = ""
-
-    return df.loc[:, col_order].copy()
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Scrape Courses profiles from two instances",
-    )
-
-    parser.add_argument(
-        "-c1",
-        type=str,
-        required=True,
-        help="New Courses instance session cookie",
-    )
-    parser.add_argument(
-        "-c2",
-        type=str,
-        required=True,
-        help="Old Courses instance session cookie",
-    )
-    parser.add_argument("-o", type=str, default="profiles.csv", help="Output file")
-    parser.add_argument("-t", type=int, default=10, help="How many threads to use")
-
-    id_group = parser.add_mutually_exclusive_group(required=True)
-    id_group.add_argument("-i", type=int, nargs="+", help="Profile IDs to scrape")
-    id_group.add_argument("-m", type=int, help="Highest ID")
-
-    return parser.parse_args()
-
-
-def get_courses_session(cookie: str, threads: int = 10) -> requests.Session:
-    retry_strategy = Retry(
-        total=5,
-        status_forcelist=[429, 500, 502, 503, 504],
-        backoff_factor=1,
-        allowed_methods=["HEAD", "GET", "OPTIONS"],
-    )
-    adapter = HTTPAdapter(
-        max_retries=retry_strategy,
-        pool_connections=max(10, threads),
-        pool_maxsize=max(10, threads),
-    )
-    session = requests.Session()
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    session.cookies.set("MoodleSession", cookie)
-
-    return session
-
-
-def _save_checkpoints(
-    df_new: pd.DataFrame,
-    df_old: pd.DataFrame,
-    checkpoint_new: Path,
-    checkpoint_old: Path,
-) -> None:
-    write_csv_atomically(df_new, checkpoint_new)
-    write_csv_atomically(df_old, checkpoint_old)
-    logger.info(
-        "Checkpoints saved (%d new, %d old profiles)",
-        len(df_new),
-        len(df_old),
+    return collect_profiles(
+        config,
+        profile_ids,
+        ProfileCollectionDependencies(
+            create_session=create_session,
+            fetch_profile=fetch_profile,
+        ),
     )
 
 
-def _salvage_futures(
-    future_new: Future[list[dict[str, str]]],
-    future_old: Future[list[dict[str, str]]],
-) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
-    salvaged_new: list[dict[str, str]] = []
-    salvaged_old: list[dict[str, str]] = []
-    try:
-        salvaged_new = future_new.result(timeout=0)
-    except (CancelledError, FuturesTimeoutError):
-        logger.debug("Could not retrieve new profiles (not ready or cancelled)")
-    except Exception:
-        logger.debug("Could not retrieve new profiles", exc_info=True)
-    try:
-        salvaged_old = future_old.result(timeout=0)
-    except (CancelledError, FuturesTimeoutError):
-        logger.debug("Could not retrieve old profiles (not ready or cancelled)")
-    except Exception:
-        logger.debug("Could not retrieve old profiles", exc_info=True)
-    return salvaged_new, salvaged_old
+def _checkpoint_paths(config: ScrapeConfig) -> CheckpointPaths:
+    return CheckpointPaths(
+        manifest=config.checkpoint_new.parent / "checkpoint_manifest.json",
+        legacy_new=config.checkpoint_new,
+        legacy_old=config.checkpoint_old,
+    )
+
+
+def _terminate_process(exit_code: int) -> NoReturn:
+    os._exit(exit_code)
+
+
+@dataclass(frozen=True, slots=True)
+class _ScrapeState:
+    requested_ids: tuple[int, ...]
+    new: InstanceCheckpoint
+    old: InstanceCheckpoint
 
 
 def _scrape_with_interrupt_handling(
     config: ScrapeConfig,
-    profile_ids_new: range | list[int],
-    profile_ids_old: range | list[int],
-    existing_new: pd.DataFrame | None = None,
-    existing_old: pd.DataFrame | None = None,
+    profile_ids_new: Sequence[int],
+    profile_ids_old: Sequence[int],
+    state: _ScrapeState | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    future_new: Future[list[dict[str, str]]] = Future()
-    future_old: Future[list[dict[str, str]]] = Future()
-
-    try:
-        with ThreadPoolExecutor(max_workers=2) as site_executor:
-            future_new = site_executor.submit(
-                get_profiles,
-                config.session_new,
-                profile_ids_new,
-                config.threads,
-                base_urls["new"],
-                selectors_new,
-            )
-            future_old = site_executor.submit(
-                get_profiles,
-                config.session_old,
-                profile_ids_old,
-                config.threads,
-                base_urls["old"],
-                selectors_old,
-            )
-            profiles_new, profiles_old = (
-                future_new.result(),
-                future_old.result(),
-            )
-    except KeyboardInterrupt:
-        logger.info("Interrupted — saving partial checkpoints...")
-        partial_new, partial_old = _salvage_futures(future_new, future_old)
-        df_new = reorder_columns(pd.DataFrame(partial_new), columns)
-        df_old = reorder_columns(pd.DataFrame(partial_old), columns)
-
-        if existing_new is not None:
-            df_new = pd.concat([existing_new, df_new], ignore_index=True)
-        if existing_old is not None:
-            df_old = pd.concat([existing_old, df_old], ignore_index=True)
-
-        _save_checkpoints(
-            df_new,
-            df_old,
-            config.checkpoint_new,
-            config.checkpoint_old,
-        )
-        sys.exit(130)
-
-    df_new = reorder_columns(pd.DataFrame(profiles_new), columns)
-    df_old = reorder_columns(pd.DataFrame(profiles_old), columns)
-
-    if existing_new is not None:
-        df_new = pd.concat([existing_new, df_new], ignore_index=True)
-    if existing_old is not None:
-        df_old = pd.concat([existing_old, df_old], ignore_index=True)
-
-    return df_new, df_old
-
-
-def _resolve_profile_ids(
-    args: argparse.Namespace,
-) -> range | list[int] | None:
-    if args.i is not None:
-        return list(dict.fromkeys(args.i))
-    if args.m is not None:
-        return range(1, args.m + 1)
-    return None
+    initial = None
+    if state is not None:
+        initial = CheckpointSnapshot(state.requested_ids, state.new, state.old)
+    snapshot = run_coordinator(
+        CoordinatorPlan(
+            http_new=config.http_new,
+            http_old=config.http_old,
+            profile_ids_new=profile_ids_new,
+            profile_ids_old=profile_ids_old,
+            paths=_checkpoint_paths(config),
+            initial=initial,
+            batch_size=CHECKPOINT_BATCH_SIZE,
+            poll_interval=POLL_INTERVAL_SECONDS,
+            checkpoint_interval=CHECKPOINT_INTERVAL_SECONDS,
+            monotonic_clock=time.monotonic,
+            terminate=_terminate_process,
+        ),
+    )
+    return snapshot.new.frame, snapshot.old.frame
 
 
 def _remaining_profile_ids(
-    profile_ids: range | list[int],
+    profile_ids: Sequence[int],
     checkpoint: pd.DataFrame,
 ) -> list[int]:
     scraped_ids = set(checkpoint[COL_ID].astype(str))
@@ -428,28 +121,34 @@ def _remaining_profile_ids(
     ]
 
 
-def _load_checkpoint(path: Path) -> pd.DataFrame:
-    if not path.exists():
-        return pd.DataFrame(columns=columns, dtype="string")
-    return reorder_columns(
-        pd.read_csv(path, dtype="string", keep_default_na=False),
-        columns,
-    )
-
-
 def _resume_from_checkpoints(
     config: ScrapeConfig,
-    profile_ids: range | list[int],
+    profile_ids: Sequence[int],
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     logger.info("Loading from checkpoints...")
-    df_new = _load_checkpoint(config.checkpoint_new)
-    df_old = _load_checkpoint(config.checkpoint_old)
-    remaining_new = _remaining_profile_ids(profile_ids, df_new)
-    remaining_old = _remaining_profile_ids(profile_ids, df_old)
+    paths = _checkpoint_paths(config)
+    snapshot = load_checkpoint(paths, tuple(profile_ids))
+    if snapshot is None:
+        return _scrape_with_interrupt_handling(
+            config,
+            profile_ids,
+            profile_ids,
+        )
+    remaining_new = [
+        profile_id
+        for profile_id in profile_ids
+        if profile_id not in snapshot.new.completed_ids
+    ]
+    remaining_old = [
+        profile_id
+        for profile_id in profile_ids
+        if profile_id not in snapshot.old.completed_ids
+    ]
 
     if not remaining_new and not remaining_old:
         logger.info("All profiles already scraped.")
-        return df_new, df_old
+        save_checkpoint(paths, snapshot)
+        return snapshot.new.frame, snapshot.old.frame
 
     logger.info(
         "Resuming scraping for %d new and %d old remaining profiles...",
@@ -461,8 +160,11 @@ def _resume_from_checkpoints(
         config,
         remaining_new,
         remaining_old,
-        existing_new=df_new,
-        existing_old=df_old,
+        _ScrapeState(
+            requested_ids=snapshot.requested_ids,
+            new=snapshot.new,
+            old=snapshot.old,
+        ),
     )
 
 
@@ -474,12 +176,9 @@ def _finalize_output(
     config: ScrapeConfig,
 ) -> None:
     df_merged = merge_profiles(df_old, df_new)
-    write_csv_atomically(df_merged, output_path / output_file)
+    export_profiles(df_merged, output_path / output_file)
 
-    if config.checkpoint_new.exists():
-        config.checkpoint_new.unlink()
-    if config.checkpoint_old.exists():
-        config.checkpoint_old.unlink()
+    clear_checkpoints(_checkpoint_paths(config))
 
     logger.info("Written %d profiles to %s", len(df_merged), output_path / output_file)
 
@@ -491,25 +190,36 @@ def main() -> None:
     )
     logging.getLogger("urllib3").setLevel(logging.ERROR)
 
-    args = parse_args()
+    cli_config = parse_cli()
     start = time.time()
+    profile_ids = cli_config.profile_ids
 
-    profile_ids = _resolve_profile_ids(args)
-    if profile_ids is None:
-        return
-
-    output_path = Path("output")
+    output_path = cli_config.output_file.parent
     output_path.mkdir(exist_ok=True, parents=True)
 
     config = ScrapeConfig(
-        session_new=get_courses_session(args.c1, args.t),
-        session_old=get_courses_session(args.c2, args.t),
-        threads=args.t,
+        http_new=InstanceHttpConfig(
+            base_url=base_urls["new"],
+            cookie=cli_config.cookie_new,
+            selectors=selectors_new,
+            threads=cli_config.threads,
+        ),
+        http_old=InstanceHttpConfig(
+            base_url=base_urls["old"],
+            cookie=cli_config.cookie_old,
+            selectors=selectors_old,
+            threads=cli_config.threads,
+        ),
         checkpoint_new=output_path / "checkpoint_new.csv",
         checkpoint_old=output_path / "checkpoint_old.csv",
     )
 
-    if config.checkpoint_new.exists() or config.checkpoint_old.exists():
+    checkpoint_paths = _checkpoint_paths(config)
+    if (
+        checkpoint_paths.manifest.exists()
+        or checkpoint_paths.legacy_new.exists()
+        or checkpoint_paths.legacy_old.exists()
+    ):
         df_new, df_old = _resume_from_checkpoints(config, profile_ids)
     else:
         logger.info("Scraping both instances concurrently...")
@@ -518,14 +228,8 @@ def main() -> None:
             profile_ids,
             profile_ids,
         )
-        _save_checkpoints(
-            df_new,
-            df_old,
-            config.checkpoint_new,
-            config.checkpoint_old,
-        )
 
-    _finalize_output(df_old, df_new, output_path, args.o, config)
+    _finalize_output(df_old, df_new, output_path, cli_config.output_file.name, config)
     logger.info("Finished in %.2f seconds", time.time() - start)
 
 
