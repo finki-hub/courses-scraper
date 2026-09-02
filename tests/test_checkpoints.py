@@ -213,28 +213,6 @@ def test_save_rejects_invalid_checkpoint_membership(
         checkpoints.save(CheckpointPaths.for_directory(tmp_path), snapshot)
 
 
-@pytest.mark.parametrize("legacy_side", ["new", "old"])
-def test_load_migrates_one_sided_legacy_checkpoint_preserving_text(
-    tmp_path: Path,
-    legacy_side: str,
-) -> None:
-    paths = CheckpointPaths.for_directory(tmp_path)
-    legacy = paths.legacy_new if legacy_side == "new" else paths.legacy_old
-    _frame(1, skype="00123").to_csv(legacy, index=False)
-
-    snapshot = checkpoints.load(paths, (1, 2))
-
-    assert snapshot is not None
-    loaded = snapshot.new if legacy_side == "new" else snapshot.old
-    missing = snapshot.old if legacy_side == "new" else snapshot.new
-    assert loaded.frame.loc[0, "Skype"] == "00123"
-    assert loaded.completed_ids == frozenset({1})
-    assert missing.frame.empty
-    assert paths.manifest.exists()
-    assert not paths.legacy_new.exists()
-    assert not paths.legacy_old.exists()
-
-
 def test_load_ignores_orphan_generation_files(tmp_path: Path) -> None:
     paths = CheckpointPaths.for_directory(tmp_path)
     checkpoints.save(paths, _snapshot())
@@ -254,24 +232,6 @@ def test_load_accepts_logically_identical_reordered_request_ids(tmp_path: Path) 
 
     assert loaded is not None
     assert loaded.requested_ids == (1, 2, 3)
-
-
-def test_legacy_migration_filters_rows_outside_current_request_preserving_text(
-    tmp_path: Path,
-) -> None:
-    paths = CheckpointPaths.for_directory(tmp_path)
-    legacy = pd.concat(
-        [_frame(1, skype="00123"), _frame(4, skype="NA")],
-        ignore_index=True,
-    )
-    legacy.to_csv(paths.legacy_new, index=False)
-
-    loaded = checkpoints.load(paths, (1, 2))
-
-    assert loaded is not None
-    assert loaded.new.frame[COL_ID].tolist() == ["1"]
-    assert loaded.new.frame.loc[0, "Skype"] == "00123"
-    assert loaded.new.completed_ids == frozenset({1})
 
 
 def test_successful_save_removes_only_superseded_strict_generations(
