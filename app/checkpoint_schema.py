@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -10,6 +12,7 @@ import pandas as pd
 from app.constants import COL_ID, columns
 
 _ID_PATTERN = re.compile(r"[1-9]\d*")
+_LEGACY_COLUMNS = tuple(column for column in columns if column != "Timezone")
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +56,11 @@ def fail_validation(detail: str) -> CheckpointValidationError:
     return CheckpointValidationError(detail=detail)
 
 
+def request_fingerprint(requested_ids: tuple[int, ...]) -> str:
+    payload = json.dumps(requested_ids, separators=(",", ":")).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
 def canonical_requested_ids(requested_ids: Sequence[int]) -> tuple[int, ...]:
     if any(profile_id <= 0 for profile_id in requested_ids):
         raise fail_validation("requested IDs must be positive")
@@ -69,6 +77,12 @@ def frame_ids(frame: pd.DataFrame, side: str) -> frozenset[int]:
     if len(profile_ids) != len(set(profile_ids)):
         raise fail_validation(f"{side} IDs must be unique")
     return frozenset(profile_ids)
+
+
+def normalize_legacy_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    if tuple(frame.columns) == _LEGACY_COLUMNS:
+        frame.insert(columns.index("Timezone"), "Timezone", "")
+    return frame
 
 
 def validate_snapshot(snapshot: CheckpointSnapshot) -> None:

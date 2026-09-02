@@ -1,5 +1,6 @@
 import re
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
+from contextlib import suppress
 from pathlib import Path
 from typing import Final
 
@@ -19,6 +20,12 @@ def remove_superseded(directory: Path, current_generation: str) -> None:
     for candidate, generation in generation_files(directory):
         if generation != current_generation:
             candidate.unlink()
+
+
+def remove_best_effort(paths: Iterable[Path]) -> None:
+    for path in paths:
+        with suppress(OSError):
+            path.unlink(missing_ok=True)
 
 
 def remove_all(directory: Path) -> None:

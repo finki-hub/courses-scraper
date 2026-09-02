@@ -99,6 +99,7 @@ def test_failed_generation_write_preserves_prior_manifest_selection(
     original = _snapshot()
     checkpoints.save(paths, original)
     original_manifest = paths.manifest.read_bytes()
+    original_generation_files = set(tmp_path.glob("checkpoint_*.csv"))
     real_csv_write = write_csv_atomically
     write_count = 0
 
@@ -121,6 +122,7 @@ def test_failed_generation_write_preserves_prior_manifest_selection(
         )
 
     assert paths.manifest.read_bytes() == original_manifest
+    assert set(tmp_path.glob("checkpoint_*.csv")) == original_generation_files
     _assert_snapshot(checkpoints.load(paths, (1, 2, 3)), original)
 
 
@@ -277,6 +279,31 @@ def test_manifest_write_failure_keeps_prior_committed_generation(
         checkpoints.save(paths, _snapshot())
 
     assert all(path.exists() for path in prior_generation_files)
+
+
+def test_manifest_post_replace_failure_keeps_selected_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = CheckpointPaths.for_directory(tmp_path)
+    checkpoints.save(paths, _snapshot())
+    replacement = _snapshot(new_rows=(1, 3), completed_new=frozenset({1, 3}))
+    real_manifest_write = write_bytes_atomically
+
+    def publish_then_fail(destination: Path, payload: bytes) -> None:
+        real_manifest_write(destination, payload)
+        raise OSError("post-replace fsync fault")
+
+    monkeypatch.setattr(
+        checkpoints,
+        "_write_manifest_atomically",
+        publish_then_fail,
+    )
+
+    with pytest.raises(OSError, match="post-replace fsync fault"):
+        checkpoints.save(paths, replacement)
+
+    _assert_snapshot(checkpoints.load(paths, (1, 2, 3)), replacement)
 
 
 def test_clear_removes_manifest_selected_generation_and_legacy_files(

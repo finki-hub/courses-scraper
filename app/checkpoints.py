@@ -3,13 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from contextlib import suppress
 from pathlib import Path
 from typing import Final
 from uuid import uuid4
 
 import pandas as pd
 
-from app.checkpoint_generations import remove_all, remove_superseded
+from app.checkpoint_generations import remove_all, remove_best_effort, remove_superseded
 from app.checkpoint_schema import (
     CheckpointPaths,
     CheckpointSnapshot,
@@ -18,6 +19,8 @@ from app.checkpoint_schema import (
     canonical_requested_ids,
     fail_validation,
     frame_ids,
+    normalize_legacy_frame,
+    request_fingerprint,
     validate_snapshot,
 )
 from app.constants import COL_ID, columns
@@ -35,11 +38,6 @@ __all__ = (
 )
 
 _MANIFEST_VERSION: Final = 1
-
-
-def _request_fingerprint(requested_ids: tuple[int, ...]) -> str:
-    payload = json.dumps(requested_ids, separators=(",", ":")).encode()
-    return hashlib.sha256(payload).hexdigest()
 
 
 def _sha256(path: Path) -> str:
@@ -65,36 +63,43 @@ def save(paths: CheckpointPaths, snapshot: CheckpointSnapshot) -> None:
         "old": f"checkpoint_old.{generation}.csv",
     }
     checkpoint_by_side = {"new": snapshot.new, "old": snapshot.old}
-    for side in ("new", "old"):
-        write_csv_atomically(
-            checkpoint_by_side[side].frame,
-            directory / filenames[side],
-        )
-    instances = {
-        side: {
-            "file": filenames[side],
-            "rows": len(checkpoint_by_side[side].frame),
-            "completed_ids": sorted(checkpoint_by_side[side].completed_ids),
-            "sha256": _sha256(directory / filenames[side]),
+    generation_is_orphan = True
+    try:
+        for side in ("new", "old"):
+            write_csv_atomically(
+                checkpoint_by_side[side].frame,
+                directory / filenames[side],
+            )
+        instances = {
+            side: {
+                "file": filenames[side],
+                "rows": len(checkpoint_by_side[side].frame),
+                "completed_ids": sorted(checkpoint_by_side[side].completed_ids),
+                "sha256": _sha256(directory / filenames[side]),
+            }
+            for side in ("new", "old")
         }
-        for side in ("new", "old")
-    }
-    manifest = {
-        "version": _MANIFEST_VERSION,
-        "generation": generation,
-        "columns": columns,
-        "request": {
-            "ids": list(snapshot.requested_ids),
-            "count": len(snapshot.requested_ids),
-            "fingerprint": _request_fingerprint(snapshot.requested_ids),
-        },
-        "instances": instances,
-    }
-    payload = (
-        json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n"
-    ).encode()
-    _write_manifest_atomically(paths.manifest, payload)
-    remove_superseded(directory, generation)
+        manifest = {
+            "version": _MANIFEST_VERSION,
+            "generation": generation,
+            "columns": columns,
+            "request": {
+                "ids": list(snapshot.requested_ids),
+                "count": len(snapshot.requested_ids),
+                "fingerprint": request_fingerprint(snapshot.requested_ids),
+            },
+            "instances": instances,
+        }
+        payload = (
+            json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode()
+        generation_is_orphan = False
+        _write_manifest_atomically(paths.manifest, payload)
+    finally:
+        if generation_is_orphan:
+            remove_best_effort(directory / name for name in filenames.values())
+    with suppress(OSError):
+        remove_superseded(directory, generation)
 
 
 def _mapping(value: object, detail: str) -> dict[str, object]:
@@ -186,7 +191,7 @@ def _load_manifest(
     stored_ids = _integer_list(request.get("ids"), "request IDs are malformed")
     if (
         request.get("count") != len(stored_ids)
-        or request.get("fingerprint") != _request_fingerprint(stored_ids)
+        or request.get("fingerprint") != request_fingerprint(stored_ids)
         or stored_ids != requested_ids
     ):
         raise fail_validation("checkpoint request does not match the current request")
@@ -227,6 +232,7 @@ def _load_legacy(
         frame = pd.read_csv(path, dtype="string", keep_default_na=False)
     except (OSError, pd.errors.ParserError, pd.errors.EmptyDataError) as error:
         raise fail_validation(f"legacy {side} checkpoint cannot be read") from error
+    frame = normalize_legacy_frame(frame)
     profile_ids = frame_ids(frame, side)
     included = frame[COL_ID].astype(str).map(int).isin(requested)
     filtered = frame.loc[included].reset_index(drop=True)
@@ -252,8 +258,7 @@ def load(
     )
     validate_snapshot(snapshot)
     save(paths, snapshot)
-    paths.legacy_new.unlink(missing_ok=True)
-    paths.legacy_old.unlink(missing_ok=True)
+    remove_best_effort((paths.legacy_new, paths.legacy_old))
     return snapshot
 
 
