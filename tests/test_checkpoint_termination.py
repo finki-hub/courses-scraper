@@ -27,7 +27,7 @@ from app.http import (
     ProfileRequestError,
     ProfileSuccess,
 )
-from tests.checkpoint_helpers import make_config
+from tests.checkpoint_helpers import make_config, mock_completed_profile_executor
 
 
 def test_interrupt_shuts_down_nonblocking_then_saves_before_termination(
@@ -85,17 +85,7 @@ def test_interrupt_after_submission_salvages_completed_profile(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = make_config(tmp_path)
-    completed: Future[ProfileFetchOutcome] = Future()
-    completed.set_result(ProfileSuccess({COL_ID: "1"}))
-    executor = Mock()
-    executor.submit.return_value = completed
-    monkeypatch.setattr(coordinator, "ThreadPoolExecutor", Mock(return_value=executor))
-    monkeypatch.setattr(coordinator, "preflight_instance", Mock())
-    monkeypatch.setattr(
-        coordinator,
-        "create_session",
-        lambda _config: requests.Session(),
-    )
+    executor = mock_completed_profile_executor(monkeypatch)
     save = Mock()
     terminate = Mock()
     monkeypatch.setattr(coordinator, "save_checkpoint", save)
