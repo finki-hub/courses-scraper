@@ -59,6 +59,7 @@ def _record_outcome(
             return 1
         case unreachable:
             assert_never(unreachable)
+            return 0
 
 
 def collect_profiles(
