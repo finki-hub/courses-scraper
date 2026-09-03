@@ -19,7 +19,7 @@ from app.http import (
     ProfileSuccess,
     ProfileTransportFailure,
 )
-from tests.checkpoint_helpers import make_config
+from tests.checkpoint_helpers import make_config, mock_completed_profile_executor
 
 
 def test_preflight_error_propagates_without_save_or_termination(
@@ -217,17 +217,7 @@ def test_final_checkpoint_failure_aborts_nonblocking_and_terminates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = make_config(tmp_path)
-    completed: Future[ProfileFetchOutcome] = Future()
-    completed.set_result(ProfileSuccess({COL_ID: "1"}))
-    executor = Mock()
-    executor.submit.return_value = completed
-    monkeypatch.setattr(coordinator, "ThreadPoolExecutor", Mock(return_value=executor))
-    monkeypatch.setattr(coordinator, "preflight_instance", Mock())
-    monkeypatch.setattr(
-        coordinator,
-        "create_session",
-        lambda _config: requests.Session(),
-    )
+    executor = mock_completed_profile_executor(monkeypatch)
     events: list[str] = []
 
     def save(_paths: CheckpointPaths, _snapshot: CheckpointSnapshot) -> None:
