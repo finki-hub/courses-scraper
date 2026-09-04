@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import os
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -117,7 +118,16 @@ def parse_cli(
     )
     id_group.add_argument("-m", type=_positive_int, help="Highest ID")
 
-    arguments = parser.parse_args(argv, namespace=_Arguments())
+    raw_argv = tuple(sys.argv[1:] if argv is None else argv)
+    if any(
+        argument == "--cas-password" or argument.startswith("--cas-password=")
+        for argument in raw_argv
+    ):
+        parser.error(
+            "--cas-password is not supported; use COURSES_CAS_PASSWORD or the "
+            "hidden prompt"
+        )
+    arguments = parser.parse_args(raw_argv, namespace=_Arguments())
     environment = os.environ if environ is None else environ
 
     def resolve_cookie(cookie_input: _CookieInput) -> str:

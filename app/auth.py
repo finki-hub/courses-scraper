@@ -13,6 +13,7 @@ from bs4 import BeautifulSoup
 
 CAS_LOGIN_URL: Final = "https://cas.finki.ukim.mk/cas/login"
 REQUEST_TIMEOUT: Final = (5, 15)
+MAX_SERVICE_REDIRECTS: Final = 5
 
 __all__ = (
     "CasAuthenticationError",
@@ -32,8 +33,8 @@ class CasCredentials:
 
 @dataclass(frozen=True, slots=True)
 class InstanceCookies:
-    moodle_session: str
-    server_name: str | None = None
+    moodle_session: str = field(repr=False)
+    server_name: str | None = field(default=None, repr=False)
 
     def as_header(self) -> str:
         parts = [f"MoodleSession={self.moodle_session}"]
@@ -51,6 +52,7 @@ class ManualCookies:
 @unique
 class CasAuthenticationFailure(StrEnum):
     REQUEST = "request_failed"
+    INVALID_LOGIN_FORM = "invalid_login_form"
     MISSING_COOKIES = "missing_service_cookies"
     UNSAFE_REDIRECT = "unsafe_redirect"
 
@@ -77,6 +79,84 @@ class CasAuthenticationError(Exception):
         )
 
 
+def _unsafe_redirect(service_url: str) -> CasAuthenticationError:
+    return CasAuthenticationError(
+        service_url=service_url,
+        reason=CasAuthenticationFailure.UNSAFE_REDIRECT,
+    )
+
+
+def _is_exact_https_origin(url: str, expected_url: str) -> bool:
+    try:
+        target = urlsplit(url)
+        expected = urlsplit(expected_url)
+        target_port = target.port or 443
+        expected_port = expected.port or 443
+    except ValueError:
+        return False
+    return (
+        target.scheme == "https"
+        and target.hostname == expected.hostname
+        and target_port == expected_port
+        and target.username is None
+        and target.password is None
+    )
+
+
+def _login_form_data(
+    soup: BeautifulSoup,
+    service_url: str,
+) -> list[tuple[str, str]]:
+    candidates: list[list[tuple[str, str]]] = []
+    for form in soup.select("form"):
+        fields: list[tuple[str, str]] = []
+        for field_element in form.select('input[type="hidden"]'):
+            name = field_element.get("name")
+            value = field_element.get("value", "")
+            if isinstance(name, str):
+                fields.append((name, value if isinstance(value, str) else ""))
+        names = [name for name, _ in fields]
+        if names.count("execution") == 1 and names.count("_eventId") == 1:
+            candidates.append(fields)
+    if len(candidates) != 1:
+        raise CasAuthenticationError(
+            service_url=service_url,
+            reason=CasAuthenticationFailure.INVALID_LOGIN_FORM,
+        )
+    return candidates[0]
+
+
+def _follow_service_redirects(
+    session: requests.Session,
+    redirect_url: str,
+    service_url: str,
+) -> None:
+    current_url = redirect_url
+    for redirect_count in range(MAX_SERVICE_REDIRECTS + 1):
+        if not _is_exact_https_origin(current_url, service_url):
+            raise _unsafe_redirect(service_url)
+        response = session.get(
+            current_url,
+            allow_redirects=False,
+            timeout=REQUEST_TIMEOUT,
+        )
+        try:
+            response.raise_for_status()
+            _ = response.content
+            if response.status_code in (HTTPStatus.FOUND, HTTPStatus.SEE_OTHER):
+                location = response.headers.get("Location")
+                if location is None or redirect_count == MAX_SERVICE_REDIRECTS:
+                    raise _unsafe_redirect(service_url)
+                current_url = urljoin(current_url, location)
+                continue
+            if response.is_redirect or response.is_permanent_redirect:
+                raise _unsafe_redirect(service_url)
+            return
+        finally:
+            response.close()
+    raise _unsafe_redirect(service_url)
+
+
 def authenticate_instance(
     credentials: CasCredentials,
     base_url: str,
@@ -87,17 +167,23 @@ def authenticate_instance(
 
     try:
         with session_factory() as session:
-            initial_response = session.get(cas_url, timeout=REQUEST_TIMEOUT)
-            initial_response.raise_for_status()
-            soup = BeautifulSoup(initial_response.text, "lxml")
-            initial_response.close()
+            initial_response = session.get(
+                cas_url,
+                allow_redirects=False,
+                timeout=REQUEST_TIMEOUT,
+            )
+            try:
+                initial_response.raise_for_status()
+                if (
+                    initial_response.is_redirect
+                    or initial_response.is_permanent_redirect
+                ):
+                    raise _unsafe_redirect(service_url)
+                soup = BeautifulSoup(initial_response.text, "lxml")
+            finally:
+                initial_response.close()
 
-            form_data: list[tuple[str, str]] = []
-            for field in soup.select('input[type="hidden"]'):
-                name = field.get("name")
-                value = field.get("value", "")
-                if isinstance(name, str):
-                    form_data.append((name, value if isinstance(value, str) else ""))
+            form_data = _login_form_data(soup, service_url)
             form_data.extend(
                 (
                     ("username", credentials.username),
@@ -120,29 +206,9 @@ def authenticate_instance(
                 redirect_url = urljoin(
                     cas_url, post_response.headers.get("Location", "")
                 )
-                redirect_target = urlsplit(redirect_url)
-                service_target = urlsplit(service_url)
-                if (
-                    redirect_target.scheme != "https"
-                    or redirect_target.hostname != service_target.hostname
-                ):
-                    raise CasAuthenticationError(
-                        service_url=service_url,
-                        reason=CasAuthenticationFailure.UNSAFE_REDIRECT,
-                    )
-                service_response = session.get(
-                    redirect_url,
-                    allow_redirects=True,
-                    timeout=REQUEST_TIMEOUT,
-                )
-                service_response.raise_for_status()
-                _ = service_response.content
-                service_response.close()
+                _follow_service_redirects(session, redirect_url, service_url)
             elif post_response.is_redirect or post_response.is_permanent_redirect:
-                raise CasAuthenticationError(
-                    service_url=service_url,
-                    reason=CasAuthenticationFailure.UNSAFE_REDIRECT,
-                )
+                raise _unsafe_redirect(service_url)
 
             prepared = session.prepare_request(requests.Request("GET", service_url))
             parsed = SimpleCookie()
@@ -153,7 +219,11 @@ def authenticate_instance(
             reason=CasAuthenticationFailure.REQUEST,
         ) from error
 
-    missing = tuple(name for name in ("MoodleSession", "SRVNAME") if name not in parsed)
+    missing = tuple(
+        name
+        for name in ("MoodleSession", "SRVNAME")
+        if name not in parsed or not parsed[name].value
+    )
     if missing:
         raise CasAuthenticationError(
             service_url=service_url,

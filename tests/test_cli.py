@@ -13,6 +13,8 @@ from app import cli
 from app.auth import CasCredentials, InstanceCookies, ManualCookies
 from app.cli import CliConfig, parse_cli
 
+CREDENTIAL_VALUE = "credential-value"
+
 
 def _parse(
     argv: Sequence[str],
@@ -278,6 +280,24 @@ def test_parse_cli_rejects_blank_explicit_cas_username() -> None:
         )
 
     assert caught.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--cas", "--cas-password", CREDENTIAL_VALUE, "-m", "1"],
+        ["--cas", f"--cas-password={CREDENTIAL_VALUE}", "-m", "1"],
+    ],
+)
+def test_parse_cli_redacts_unsupported_password_arguments(
+    argv: list[str],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as caught:
+        _parse(argv, environ={})
+
+    assert caught.value.code == 2
+    assert CREDENTIAL_VALUE not in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(

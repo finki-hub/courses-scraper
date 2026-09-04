@@ -235,17 +235,18 @@ def main() -> None:
         checkpoint_old=output_path / "checkpoint_old.csv",
     )
 
-    if verify_all_instances:
+    checkpoint_paths = _checkpoint_paths(config)
+    has_checkpoint = (
+        checkpoint_paths.manifest.exists()
+        or checkpoint_paths.legacy_new.exists()
+        or checkpoint_paths.legacy_old.exists()
+    )
+    if verify_all_instances and has_checkpoint:
         for http_config in (config.http_new, config.http_old):
             with create_session(http_config) as session:
                 preflight_instance(session, http_config)
 
-    checkpoint_paths = _checkpoint_paths(config)
-    if (
-        checkpoint_paths.manifest.exists()
-        or checkpoint_paths.legacy_new.exists()
-        or checkpoint_paths.legacy_old.exists()
-    ):
+    if has_checkpoint:
         df_new, df_old = _resume_from_checkpoints(config, profile_ids)
     else:
         logger.info("Scraping both instances concurrently...")
