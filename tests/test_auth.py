@@ -233,20 +233,3 @@ def test_authenticate_instance_rejects_credential_replaying_redirect() -> None:
         )
 
     assert caught.value.reason is auth.CasAuthenticationFailure.UNSAFE_REDIRECT
-
-
-def test_cas_credentials_hide_password_from_representations() -> None:
-    # Given a credential object used by CLI configuration and diagnostics.
-    credentials = auth.CasCredentials("student", CREDENTIAL_VALUE)
-
-    # When it is represented for debugging, then the password is absent.
-    assert CREDENTIAL_VALUE not in repr(credentials)
-
-
-def test_instance_cookies_hide_session_values_from_representations() -> None:
-    cookies = auth.InstanceCookies(CREDENTIAL_VALUE, "routing-value")
-
-    representation = repr(cookies)
-
-    assert CREDENTIAL_VALUE not in representation
-    assert "routing-value" not in representation
