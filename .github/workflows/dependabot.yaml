@@ -10,6 +10,5 @@ permissions:
 
 jobs:
   dependabot:
-    uses: finki-hub/.github/.github/workflows/dependabot.yaml@d10f74eb5f2d9b377627dd390c4081c8b10867fc
-    with:
-      auto-merge-uv: false
+    uses: finki-hub/.github/.github/workflows/dependabot.yaml@main
+    secrets: inherit
