@@ -90,6 +90,16 @@ Manual-cookie example:
 
 `python -m app -m 16500`
 
+## Live CAS Smoke Test
+
+GitHub Actions authenticates and preflights both Courses instances after pushes
+to `main` and on manual dispatches from `main`. The workflow expects the
+organization or repository Actions secrets `CAS_USERNAME` and `CAS_PASSWORD`,
+matching the secret names used by `finki-hub/finki-auth`.
+
+The smoke test does not scrape profiles or write output files. Runs without the
+two secrets fail before Pytest starts; ordinary test runs skip the live test.
+
 ## Output
 
 The output CSV matches profiles by a normalized email address only when that address
