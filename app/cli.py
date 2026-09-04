@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Final
 
+from app.auth import CasCredentials, InstanceCookies, ManualCookies
+
 OUTPUT_DIRECTORY: Final = Path("output")
 _WINDOWS_FORBIDDEN_FILENAME_CHARACTERS: Final = frozenset('<>:"/\\|?*')
 _WINDOWS_RESERVED_FILENAMES: Final = frozenset(
@@ -19,8 +21,7 @@ _WINDOWS_RESERVED_FILENAMES: Final = frozenset(
 
 @dataclass(frozen=True, slots=True)
 class CliConfig:
-    cookie_new: str
-    cookie_old: str
+    authentication: ManualCookies | CasCredentials
     output_file: Path
     threads: int
     profile_ids: range | tuple[int, ...]
@@ -29,6 +30,8 @@ class CliConfig:
 class _Arguments(argparse.Namespace):
     c1: str | None
     c2: str | None
+    cas: bool
+    cas_username: str | None
     o: Path
     t: int
     i: list[int] | None
@@ -78,6 +81,7 @@ def _plain_output_filename(raw: str) -> Path:
 def parse_cli(
     argv: Sequence[str] | None = None,
     environ: Mapping[str, str] | None = None,
+    prompt_text: Callable[[str], str] = input,
     prompt_secret: Callable[[str], str] = getpass.getpass,
 ) -> CliConfig:
     parser = argparse.ArgumentParser(
@@ -85,6 +89,12 @@ def parse_cli(
     )
     parser.add_argument("-c1", help="New Courses instance session cookie")
     parser.add_argument("-c2", help="Old Courses instance session cookie")
+    parser.add_argument(
+        "--cas",
+        action="store_true",
+        help="Authenticate both instances with one CAS credential pair",
+    )
+    parser.add_argument("--cas-username", help="CAS username (never the password)")
     parser.add_argument(
         "-o",
         type=_plain_output_filename,
@@ -134,22 +144,68 @@ def parse_cli(
             )
         return value
 
-    cookie_new = resolve_cookie(
-        _CookieInput(
-            explicit=arguments.c1,
-            environment_name="COURSES_COOKIE_NEW",
-            flag="-c1",
-            prompt="New Courses MoodleSession cookie: ",
-        ),
-    )
-    cookie_old = resolve_cookie(
-        _CookieInput(
-            explicit=arguments.c2,
-            environment_name="COURSES_COOKIE_OLD",
-            flag="-c2",
-            prompt="Old Courses MoodleSession cookie: ",
-        ),
-    )
+    authentication: ManualCookies | CasCredentials
+    if arguments.cas:
+        if arguments.c1 is not None or arguments.c2 is not None:
+            parser.error("--cas cannot be combined with -c1 or -c2")
+        username = arguments.cas_username
+        if username is None:
+            username = environment.get("COURSES_CAS_USERNAME")
+        if username is None:
+            try:
+                username = prompt_text("CAS username: ")
+            except EOFError:
+                parser.error(
+                    "missing CAS username: supply --cas-username, set "
+                    "COURSES_CAS_USERNAME, or enter it at the prompt",
+                )
+        password = environment.get("COURSES_CAS_PASSWORD")
+        if password is None:
+            try:
+                password = prompt_secret("CAS password: ")
+            except EOFError:
+                parser.error(
+                    "missing CAS password: set COURSES_CAS_PASSWORD or enter it at "
+                    "the hidden prompt",
+                )
+        if not username or any(
+            not character.isprintable() or character.isspace() for character in username
+        ):
+            parser.error(
+                "invalid CAS username: must be nonblank and contain no whitespace"
+            )
+        if not password.strip() or any(
+            not character.isprintable() for character in password
+        ):
+            parser.error(
+                "invalid CAS password: must be nonblank and contain no controls"
+            )
+        authentication = CasCredentials(username=username, password=password)
+    else:
+        if arguments.cas_username is not None:
+            parser.error("--cas-username requires --cas")
+        authentication = ManualCookies(
+            new=InstanceCookies(
+                moodle_session=resolve_cookie(
+                    _CookieInput(
+                        explicit=arguments.c1,
+                        environment_name="COURSES_COOKIE_NEW",
+                        flag="-c1",
+                        prompt="New Courses MoodleSession cookie: ",
+                    ),
+                ),
+            ),
+            old=InstanceCookies(
+                moodle_session=resolve_cookie(
+                    _CookieInput(
+                        explicit=arguments.c2,
+                        environment_name="COURSES_COOKIE_OLD",
+                        flag="-c2",
+                        prompt="Old Courses MoodleSession cookie: ",
+                    ),
+                ),
+            ),
+        )
 
     profile_ids: range | tuple[int, ...]
     if arguments.i is not None:
@@ -160,8 +216,7 @@ def parse_cli(
         profile_ids = range(1, arguments.m + 1)
 
     return CliConfig(
-        cookie_new=cookie_new,
-        cookie_old=cookie_old,
+        authentication=authentication,
         output_file=OUTPUT_DIRECTORY / arguments.o,
         threads=arguments.t,
         profile_ids=profile_ids,

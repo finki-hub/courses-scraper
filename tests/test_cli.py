@@ -10,6 +10,7 @@ import pytest
 
 import app.__main__ as scraper
 from app import cli
+from app.auth import CasCredentials, InstanceCookies, ManualCookies
 from app.cli import CliConfig, parse_cli
 
 
@@ -17,11 +18,19 @@ def _parse(
     argv: Sequence[str],
     *,
     environ: Mapping[str, str] | None = None,
+    prompt_text: Callable[[str], str] | None = None,
     prompt_secret: Callable[[str], str] | None = None,
 ) -> CliConfig:
+    if prompt_text is None:
+        prompt_text = Mock(side_effect=AssertionError("unexpected text prompt"))
     if prompt_secret is None:
         prompt_secret = Mock(side_effect=AssertionError("unexpected secret prompt"))
-    return parse_cli(argv, environ=environ or {}, prompt_secret=prompt_secret)
+    return parse_cli(
+        argv,
+        environ=environ or {},
+        prompt_text=prompt_text,
+        prompt_secret=prompt_secret,
+    )
 
 
 def test_parse_cli_returns_validated_values() -> None:
@@ -33,8 +42,10 @@ def test_parse_cli_returns_validated_values() -> None:
 
     # Then downstream execution receives complete typed values.
     assert config == CliConfig(
-        cookie_new="new-cookie",
-        cookie_old="old-cookie",
+        authentication=ManualCookies(
+            new=InstanceCookies(moodle_session="new-cookie"),
+            old=InstanceCookies(moodle_session="old-cookie"),
+        ),
         output_file=Path("output/profiles.csv"),
         threads=4,
         profile_ids=range(1, 4),
@@ -161,7 +172,10 @@ def test_parse_cli_prefers_explicit_cookies_over_environment() -> None:
     config = _parse(argv, environ=environ)
 
     # Then explicit flags win independently for both instances.
-    assert (config.cookie_new, config.cookie_old) == ("flag-new", "flag-old")
+    assert config.authentication == ManualCookies(
+        new=InstanceCookies(moodle_session="flag-new"),
+        old=InstanceCookies(moodle_session="flag-old"),
+    )
 
 
 def test_parse_cli_uses_environment_before_prompting() -> None:
@@ -175,7 +189,10 @@ def test_parse_cli_uses_environment_before_prompting() -> None:
     config = _parse(["-m", "1"], environ=environ)
 
     # Then environment values satisfy both cookie inputs.
-    assert (config.cookie_new, config.cookie_old) == ("env-new", "env-old")
+    assert config.authentication == ManualCookies(
+        new=InstanceCookies(moodle_session="env-new"),
+        old=InstanceCookies(moodle_session="env-old"),
+    )
 
 
 def test_parse_cli_prompts_for_each_missing_cookie() -> None:
@@ -187,8 +204,80 @@ def test_parse_cli_prompts_for_each_missing_cookie() -> None:
     config = _parse(["-m", "1"], prompt_secret=prompt_secret)
 
     # Then hidden-input prompting supplies each cookie once.
-    assert (config.cookie_new, config.cookie_old) == ("prompt-new", "prompt-old")
+    assert config.authentication == ManualCookies(
+        new=InstanceCookies(moodle_session="prompt-new"),
+        old=InstanceCookies(moodle_session="prompt-old"),
+    )
     assert prompt_secret.call_count == 2
+
+
+def test_parse_cli_uses_cas_credentials_without_cookie_prompts() -> None:
+    # Given CAS mode credentials supplied without command-line secrets.
+    environ = {
+        "COURSES_CAS_USERNAME": "student",
+        "COURSES_CAS_PASSWORD": "secret",
+    }
+
+    # When the command line is parsed in CAS mode.
+    config = _parse(["--cas", "-m", "1"], environ=environ)
+
+    # Then one credential pair replaces both manual cookie inputs.
+    assert config.authentication == CasCredentials(
+        username="student",
+        password=environ["COURSES_CAS_PASSWORD"],
+    )
+
+
+def test_parse_cli_prompts_once_for_missing_cas_credentials() -> None:
+    # Given CAS mode without credential flags or environment variables.
+    prompt_text = Mock(return_value="student")
+    prompt_secret = Mock(return_value="secret")
+
+    # When the command line is parsed in CAS mode.
+    config = _parse(
+        ["--cas", "-m", "1"],
+        prompt_text=prompt_text,
+        prompt_secret=prompt_secret,
+    )
+
+    # Then one username prompt and one hidden password prompt supply both services.
+    assert config.authentication == CasCredentials(
+        username="student",
+        password=prompt_secret.return_value,
+    )
+    prompt_text.assert_called_once()
+    prompt_secret.assert_called_once()
+
+
+def test_parse_cli_rejects_manual_cookie_flags_in_cas_mode() -> None:
+    # Given mutually conflicting authentication modes.
+    environ = {
+        "COURSES_CAS_USERNAME": "student",
+        "COURSES_CAS_PASSWORD": "secret",
+    }
+
+    # When the command line is parsed, then the ambiguity is rejected.
+    with pytest.raises(SystemExit) as caught:
+        _parse(["--cas", "-c1", "cookie", "-m", "1"], environ=environ)
+
+    assert caught.value.code == 2
+
+
+def test_parse_cli_rejects_blank_explicit_cas_username() -> None:
+    # Given a blank explicit username and a valid fallback environment value.
+    environ = {
+        "COURSES_CAS_USERNAME": "fallback-student",
+        "COURSES_CAS_PASSWORD": "secret",
+    }
+
+    # When the explicit value is parsed, then it is rejected rather than bypassed.
+    with pytest.raises(SystemExit) as caught:
+        _parse(
+            ["--cas", "--cas-username", "", "-m", "1"],
+            environ=environ,
+        )
+
+    assert caught.value.code == 2
 
 
 @pytest.mark.parametrize(
