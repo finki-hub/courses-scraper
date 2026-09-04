@@ -6,6 +6,7 @@ import pytest
 import requests
 from requests.adapters import HTTPAdapter
 
+from app.auth import InstanceCookies
 from app.constants import COL_ID, selectors_new
 from app.http import (
     REQUEST_TIMEOUT,
@@ -31,7 +32,7 @@ BASE_URL = "https://courses.finki.ukim.mk"
 def _config() -> InstanceHttpConfig:
     return InstanceHttpConfig(
         base_url=BASE_URL,
-        cookie="secret-cookie",
+        cookies=InstanceCookies(moodle_session="secret-cookie"),
         selectors=selectors_new,
         threads=2,
     )
@@ -78,6 +79,26 @@ def test_session_scopes_secure_cookie_and_identifies_scraper() -> None:
             "courses-scraper/0.1.0 "
             "(+https://github.com/finki-hub/courses-scraper; profile export)"
         )
+
+
+def test_session_sends_complete_cas_cookie_set_to_exact_host() -> None:
+    # Given CAS produced both the Moodle session and routing cookies.
+    config = replace(
+        _config(),
+        cookies=InstanceCookies(
+            moodle_session="moodle-cookie",
+            server_name="server-cookie",
+        ),
+    )
+
+    # When a request is prepared for the authenticated service.
+    with create_session(config) as session:
+        request = session.prepare_request(requests.Request("GET", f"{BASE_URL}/"))
+
+    # Then the complete cookie set is sent in the expected order.
+    assert request.headers["Cookie"] == (
+        "MoodleSession=moodle-cookie; SRVNAME=server-cookie"
+    )
 
 
 def test_session_preserves_retryable_status_policy() -> None:
