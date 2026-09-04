@@ -5,8 +5,8 @@ Script for scraping all profiles from FCSE Courses (both instances) into CSV for
 ## TL;DR
 
 1. Install `uv`
-2. Get your Courses `MOODLESESSION` cookies for both instances
-3. Run `uv run python -m app -m 17000` and enter both cookies at the hidden prompts
+2. Run `uv run python -m app --cas -m 17000`
+3. Enter your FINKI CAS username and password when prompted
 
 ## Installation
 
@@ -27,16 +27,33 @@ Arguments:
 1. `-h` - shows help message
 2. `-c1` - set `MoodleSession` cookie for the new Courses instance at `https://courses.finki.ukim.mk`
 3. `-c2` - set `MoodleSession` cookie for the old Courses instance at `https://oldcourses.finki.ukim.mk`
-4. `-o` - output file name (default: profiles.csv)
-5. `-t` - number of threads to use (default: 10)
-6. `-i` - profile IDs to be scraped
-7. `-m` - upper limit of profile IDs to be scraped
+4. `--cas` - authenticate both Courses instances with one FINKI CAS credential pair
+5. `--cas-username` - set the CAS username; the password is never accepted as a command-line argument
+6. `-o` - output file name (default: profiles.csv)
+7. `-t` - number of threads to use (default: 10)
+8. `-i` - profile IDs to be scraped
+9. `-m` - upper limit of profile IDs to be scraped
 
 Either `-i` or `-m` is required. Thread counts, maximum IDs, and every explicit
 profile ID must be positive. The `-o` value must be a plain filename; output is
 always written under `output/`.
 
-For each instance, the cookie source precedence is:
+There are two authentication modes. CAS mode performs separate logins for the new
+and old Courses services and preserves each host's `MoodleSession` and `SRVNAME`
+cookies. The username source precedence is `--cas-username`,
+`COURSES_CAS_USERNAME`, then a terminal prompt. The password source precedence is
+`COURSES_CAS_PASSWORD`, then a hidden terminal prompt:
+
+```text
+COURSES_CAS_USERNAME=<USERNAME>
+COURSES_CAS_PASSWORD=<PASSWORD>
+```
+
+Do not put the password on the command line. CAS mode does not support MFA or
+CAPTCHA challenges.
+
+Manual cookie mode remains available. For each instance, the cookie source
+precedence is:
 
 1. Explicit `-c1` or `-c2` flag
 2. `COURSES_COOKIE_NEW` or `COURSES_COOKIE_OLD` environment variable
@@ -65,7 +82,11 @@ new progress is pending, and on interruption. Re-running with the same profile
 ID set resumes both instances independently. Invalid or mismatched checkpoint
 data fails closed instead of being silently discarded.
 
-For example:
+CAS example:
+
+`python -m app --cas -m 16500`
+
+Manual-cookie example:
 
 `python -m app -m 16500`
 
