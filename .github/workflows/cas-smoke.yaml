@@ -16,7 +16,7 @@ jobs:
   cas-smoke:
     name: CAS Smoke Test
     if: github.ref == 'refs/heads/main'
-    uses: finki-hub/.github/.github/workflows/pytest.yaml@5430393b12589fe5f0cbcce2c97ea5df6bf4d09e
+    uses: finki-hub/.github/.github/workflows/pytest.yaml@main
     with:
       pytest-args: "-q tests/test_cas_live.py"
       require-cas-credentials: true
