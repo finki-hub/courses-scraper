@@ -11,4 +11,3 @@ permissions:
 jobs:
   dependabot:
     uses: finki-hub/.github/.github/workflows/dependabot.yaml@main
-    secrets: inherit
