@@ -4,10 +4,16 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, NoReturn
+from typing import Final, NoReturn, assert_never
 
 import pandas as pd
 
+from app.auth import (
+    CasAuthenticationError,
+    CasCredentials,
+    ManualCookies,
+    authenticate_instance,
+)
 from app.checkpoints import (
     CheckpointPaths,
     CheckpointSnapshot,
@@ -30,6 +36,7 @@ from app.http import (
     InstanceHttpConfig,
     create_session,
     fetch_profile,
+    preflight_instance,
 )
 from app.profile_collection import (
     ProfileCollectionDependencies,
@@ -194,25 +201,44 @@ def main() -> None:
     start = time.time()
     profile_ids = cli_config.profile_ids
 
+    match cli_config.authentication:
+        case ManualCookies(new=cookies_new, old=cookies_old):
+            verify_all_instances = False
+        case CasCredentials() as credentials:
+            logger.info("Authenticating both Courses instances through CAS...")
+            try:
+                cookies_new = authenticate_instance(credentials, base_urls["new"])
+                cookies_old = authenticate_instance(credentials, base_urls["old"])
+            except CasAuthenticationError as error:
+                logger.error("%s", error)  # noqa: TRY400 - expected credential failure
+                raise SystemExit(2) from error
+            verify_all_instances = True
+        case unreachable:
+            assert_never(unreachable)
+
     output_path = cli_config.output_file.parent
-    output_path.mkdir(exist_ok=True, parents=True)
 
     config = ScrapeConfig(
         http_new=InstanceHttpConfig(
             base_url=base_urls["new"],
-            cookie=cli_config.cookie_new,
+            cookies=cookies_new,
             selectors=selectors_new,
             threads=cli_config.threads,
         ),
         http_old=InstanceHttpConfig(
             base_url=base_urls["old"],
-            cookie=cli_config.cookie_old,
+            cookies=cookies_old,
             selectors=selectors_old,
             threads=cli_config.threads,
         ),
         checkpoint_new=output_path / "checkpoint_new.csv",
         checkpoint_old=output_path / "checkpoint_old.csv",
     )
+
+    if verify_all_instances:
+        for http_config in (config.http_new, config.http_old):
+            with create_session(http_config) as session:
+                preflight_instance(session, http_config)
 
     checkpoint_paths = _checkpoint_paths(config)
     if (
