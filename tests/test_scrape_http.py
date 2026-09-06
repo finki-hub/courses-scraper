@@ -8,6 +8,7 @@ import requests
 
 import app.__main__ as scraper
 from app import profile_collection
+from app.auth import InstanceCookies
 from app.constants import selectors_new
 from app.http import (
     TRANSPORT_FAILURE_THRESHOLD,
@@ -25,7 +26,7 @@ BASE_URL = "https://courses.finki.ukim.mk"
 def _config(*, threads: int = 1) -> InstanceHttpConfig:
     return InstanceHttpConfig(
         base_url=BASE_URL,
-        cookie="secret-cookie",
+        cookies=InstanceCookies(moodle_session="secret-cookie"),
         selectors=selectors_new,
         threads=threads,
     )

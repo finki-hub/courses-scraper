@@ -13,11 +13,9 @@ permissions:
 jobs:
   ruff:
     uses: finki-hub/.github/.github/workflows/ruff.yaml@main
-    secrets: inherit
 
   mypy:
     uses: finki-hub/.github/.github/workflows/mypy.yaml@main
-    secrets: inherit
 
   pytest:
     uses: finki-hub/.github/.github/workflows/pytest.yaml@main

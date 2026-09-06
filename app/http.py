@@ -11,6 +11,7 @@ from requests.adapters import HTTPAdapter
 from requests.auth import AuthBase
 from urllib3.util.retry import Retry
 
+from app.auth import InstanceCookies
 from app.constants import COL_ID, Selectors
 from app.profile_outcomes import (
     TRANSPORT_FAILURE_RATE_THRESHOLD,
@@ -63,7 +64,7 @@ RETRYABLE_STATUSES: Final = frozenset({429, 500, 502, 503, 504})
 @dataclass(frozen=True, slots=True)
 class InstanceHttpConfig:
     base_url: str
-    cookie: str
+    cookies: InstanceCookies
     selectors: Selectors
     threads: int
 
@@ -93,7 +94,7 @@ class PreflightError(Exception):
 @dataclass(frozen=True, slots=True)
 class _ExactHostCookieAuth(AuthBase):
     host: str
-    cookie: str
+    cookies: InstanceCookies
 
     def __call__(self, request: requests.PreparedRequest) -> requests.PreparedRequest:
         request.headers.pop("Cookie", None)
@@ -102,7 +103,7 @@ class _ExactHostCookieAuth(AuthBase):
 
         target = urlsplit(request.url)
         if target.scheme == "https" and target.hostname == self.host:
-            request.headers["Cookie"] = f"MoodleSession={self.cookie}"
+            request.headers["Cookie"] = self.cookies.as_header()
         return request
 
 
@@ -138,7 +139,7 @@ def create_session(config: InstanceHttpConfig) -> requests.Session:
     session = _ExactHostCookieSession()
     session.mount("https://", adapter)
     session.headers["User-Agent"] = USER_AGENT
-    session.auth = _ExactHostCookieAuth(host=host, cookie=config.cookie)
+    session.auth = _ExactHostCookieAuth(host=host, cookies=config.cookies)
     return session
 
 

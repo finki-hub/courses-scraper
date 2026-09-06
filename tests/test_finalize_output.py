@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 
 import app.__main__ as scraper
+from app.auth import InstanceCookies
 from app.checkpoints import CheckpointPaths
 from app.constants import COL_ID, base_urls, columns, selectors_new, selectors_old
 from app.export import EmptyExportError
@@ -14,13 +15,13 @@ def _config(tmp_path: Path) -> scraper.ScrapeConfig:
     return scraper.ScrapeConfig(
         http_new=InstanceHttpConfig(
             base_url=base_urls["new"],
-            cookie="new-cookie",
+            cookies=InstanceCookies(moodle_session="new-cookie"),
             selectors=selectors_new,
             threads=1,
         ),
         http_old=InstanceHttpConfig(
             base_url=base_urls["old"],
-            cookie="old-cookie",
+            cookies=InstanceCookies(moodle_session="old-cookie"),
             selectors=selectors_old,
             threads=1,
         ),

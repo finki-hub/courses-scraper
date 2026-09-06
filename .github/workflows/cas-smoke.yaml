@@ -1,0 +1,25 @@
+name: CAS Smoke Test
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cas-smoke-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cas-smoke:
+    name: CAS Smoke Test
+    if: github.ref == 'refs/heads/main'
+    uses: finki-hub/.github/.github/workflows/pytest.yaml@main
+    with:
+      pytest-args: "-q tests/test_cas_live.py"
+      require-cas-credentials: true
+    secrets:
+      CAS_USERNAME: ${{ secrets.CAS_USERNAME }}
+      CAS_PASSWORD: ${{ secrets.CAS_PASSWORD }}

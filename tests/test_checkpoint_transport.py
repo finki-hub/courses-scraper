@@ -10,6 +10,7 @@ import requests
 
 import app.__main__ as scraper
 from app import coordinator, coordinator_workers
+from app.auth import InstanceCookies
 from app.checkpoints import CheckpointPaths, load
 from app.constants import COL_ID, base_urls, selectors_new
 from app.http import (
@@ -67,7 +68,7 @@ def test_worker_submission_failure_releases_owned_resources(
     # Given one started worker session followed by a rejected submission.
     config = InstanceHttpConfig(
         base_url=base_urls["new"],
-        cookie="cookie",
+        cookies=InstanceCookies(moodle_session="cookie"),
         selectors=selectors_new,
         threads=1,
     )
