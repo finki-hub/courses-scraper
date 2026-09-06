@@ -1,4 +1,4 @@
-from typing import TypedDict
+from typing import Final, TypedDict
 
 __all__ = [
     "COL_COURSES",
@@ -7,6 +7,7 @@ __all__ = [
     "COL_NAME",
     "COL_PROFILE",
     "COURSES_COUNT",
+    "FIRST_UNMIGRATED_OLD_ID",
     "Selectors",
     "base_urls",
     "columns",
@@ -22,6 +23,8 @@ COL_COURSES = "Courses"
 COL_PROFILE = "Profile"
 
 COURSES_COUNT = "Courses Count"
+
+FIRST_UNMIGRATED_OLD_ID: Final = 16339
 
 
 class _BaseSelectors(TypedDict):

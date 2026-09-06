@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from app.constants import selectors_new, selectors_old
 from app.profile_parser import parse_profile_html
 
@@ -111,3 +113,17 @@ def test_profile_without_profile_tree_keeps_substantive_header_content() -> None
     # Then its substantive header and description are retained.
     assert profile["Name"] == "Katherine Johnson"
     assert profile["Description"] == "Orbital mechanics researcher."
+
+
+@pytest.mark.parametrize("error_class", ["alert-danger", "errorbox", "errormessage"])
+def test_inaccessible_profile_is_not_exported_as_user(error_class: str) -> None:
+    # Given Moodle's HTTP 200 access-denied page with a generic profile heading.
+    html = (
+        '<div class="page-header-headings"><h1>User</h1></div>'
+        f'<div id="region-main"><div class="{error_class}">'
+        "The details of this user are not available to you</div></div>"
+    )
+
+    # When the response is parsed, then no fabricated profile is returned.
+    assert parse_profile_html(html, selectors_new) == {}
+    assert parse_profile_html(html, selectors_old) == {}

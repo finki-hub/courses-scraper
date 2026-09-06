@@ -62,10 +62,10 @@ def _profiles(rows: list[list[str | int]]) -> pd.DataFrame:
     )
 
 
-def test_unique_normalized_email_matches_instance_profiles() -> None:
-    # Given one account with different local IDs and normalized email spelling.
+def test_migrated_ids_preserve_both_instance_profile_links() -> None:
+    # Given a migrated account with the same ID on both instances.
     old = _profiles([[11, "Old Name", " person@example.com ", "Old Course"]])
-    new = _profiles([[22, "New Name", "PERSON@example.com", "New Course"]])
+    new = _profiles([[11, "New Name", "PERSON@example.com", "New Course"]])
 
     # When the instance profiles are merged.
     merged = merge_profiles(old, new)
@@ -73,9 +73,9 @@ def test_unique_normalized_email_matches_instance_profiles() -> None:
     # Then both local IDs and their corresponding URLs share one row.
     assert len(merged) == 1
     assert merged.loc[0, "ID_old"] == "11"
-    assert merged.loc[0, "ID_new"] == "22"
+    assert merged.loc[0, "ID_new"] == "11"
     assert merged.loc[0, "Profile_old"] == f"{base_urls['old']}/user/profile.php?id=11"
-    assert merged.loc[0, "Profile_new"] == f"{base_urls['new']}/user/profile.php?id=22"
+    assert merged.loc[0, "Profile_new"] == f"{base_urls['new']}/user/profile.php?id=11"
 
 
 def test_duplicated_email_does_not_match_profiles() -> None:
@@ -192,8 +192,8 @@ def test_new_nonblank_identity_fields_win_with_old_fallback() -> None:
     )
     new = _profiles(
         [
-            [11, " New One ", " ONE@example.com ", ""],
-            [12, "   ", " TWO@example.com ", ""],
+            [1, " New One ", " ONE@example.com ", ""],
+            [2, "   ", " TWO@example.com ", ""],
         ],
     )
 
@@ -219,7 +219,7 @@ def test_courses_are_new_first_trimmed_deduplicated_and_counted() -> None:
         [[1, "Old", "person@example.com", " Shared Course \nOld Course\n\n"]],
     )
     new = _profiles(
-        [[2, "New", "person@example.com", " New Course \nShared Course\nNew Course"]],
+        [[1, "New", "person@example.com", " New Course \nShared Course\nNew Course"]],
     )
 
     # When matched profiles are merged.

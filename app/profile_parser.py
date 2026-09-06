@@ -16,6 +16,11 @@ def parse_profile_html(html: str, selectors: Selectors) -> dict[str, str]:
     )
     if login_form is not None:
         raise LoginPageError
+    if (
+        soup.select_one(".alert-danger, .errorbox, .errormessage") is not None
+        and soup.select_one(".profile_tree") is None
+    ):
+        return {}
     profile = {
         COL_NAME: _selected_text(soup, selectors["name_selector"]),
         "Description": _selected_text(soup, selectors["description_selector"]),

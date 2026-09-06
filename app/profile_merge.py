@@ -9,22 +9,17 @@ from app.constants import (
     COL_NAME,
     COL_PROFILE,
     COURSES_COUNT,
+    FIRST_UNMIGRATED_OLD_ID,
     base_urls,
     columns,
 )
 
 __all__ = ["MERGED_COLUMNS", "merge_profiles"]
 
-_EMAIL_KEY = "_email_key"
 _ID_OLD = f"{COL_ID}_old"
 _ID_NEW = f"{COL_ID}_new"
 _PROFILE_OLD = f"{COL_PROFILE}_old"
 _PROFILE_NEW = f"{COL_PROFILE}_new"
-_EMAIL_PATTERN: Final = (
-    r"[a-z0-9!#$%&'*+/=?^_`{|}~-]+"
-    r"(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*"
-    r"@(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}"
-)
 MERGED_COLUMNS: Final = (
     _ID_OLD,
     _ID_NEW,
@@ -72,32 +67,7 @@ def _normalize_side(
         columns={column: f"{column}_{side}" for column in normalized_input},
     )
     normalized[f"{COL_ID}_{side}"] = ids
-    emails = normalized[f"{COL_MAIL}_{side}"].fillna("").astype(str).str.strip()
-    normalized_emails = emails.str.lower()
-    local_part_lengths = emails.str.split("@", n=1).str[0].str.len()
-    valid_emails = (
-        emails.str.fullmatch(r"[\x00-\x7f]+", na=False)
-        & (emails.str.len() <= 254)
-        & (local_part_lengths <= 64)
-        & normalized_emails.str.fullmatch(_EMAIL_PATTERN, na=False)
-    )
-    normalized[_EMAIL_KEY] = normalized_emails.where(valid_emails, "")
     return normalized
-
-
-def _unique_shared_emails(
-    old: pd.DataFrame,
-    new: pd.DataFrame,
-) -> list[str]:
-    old_counts = _series(old, _EMAIL_KEY).value_counts()
-    new_counts = _series(new, _EMAIL_KEY).value_counts()
-    unique_old = {
-        str(email) for email, count in old_counts.items() if email and count == 1
-    }
-    unique_new = {
-        str(email) for email, count in new_counts.items() if email and count == 1
-    }
-    return sorted(unique_old & unique_new)
 
 
 def _coalesce_field(merged: pd.DataFrame, field: str) -> None:
@@ -134,24 +104,13 @@ def _add_profile_urls(merged: pd.DataFrame) -> None:
 def merge_profiles(df_old: pd.DataFrame, df_new: pd.DataFrame) -> pd.DataFrame:
     old = _normalize_side(df_old, "old")
     new = _normalize_side(df_new, "new")
-    shared_emails = _unique_shared_emails(old, new)
-
-    matched = old[_series(old, _EMAIL_KEY).isin(shared_emails)].merge(
-        new[_series(new, _EMAIL_KEY).isin(shared_emails)],
-        on=_EMAIL_KEY,
-        how="inner",
+    old = old[_series(old, _ID_OLD) < FIRST_UNMIGRATED_OLD_ID]
+    merged = old.merge(
+        new,
+        left_on=_ID_OLD,
+        right_on=_ID_NEW,
+        how="outer",
         validate="one_to_one",
-    )
-    merged = _dataframe(
-        pd.concat(
-            [
-                matched,
-                old[~_series(old, _EMAIL_KEY).isin(shared_emails)],
-                new[~_series(new, _EMAIL_KEY).isin(shared_emails)],
-            ],
-            ignore_index=True,
-            sort=False,
-        ),
     )
 
     for field in (COL_NAME, COL_MAIL):
