@@ -102,20 +102,27 @@ two secrets fail before Pytest starts; ordinary test runs skip the live test.
 
 ## Output
 
-The output CSV matches profiles by a normalized email address only when that address
-is unique in both instances. Moodle user IDs are local to each instance and are not
-used as a cross-instance identity.
+The output CSV matches migrated profiles by their shared Moodle user ID. The old
+instance is scraped only for IDs below **16339**; old IDs **16339 and above** are
+excluded because account IDs diverge after migration. The same filter applies to
+old rows loaded from existing checkpoints. New-instance IDs remain unrestricted
+within your requested range. Live comparisons found that IDs 16339–16400 belonged
+to different people across the two instances, making 16339 the first observed
+divergence. ID 16336 matched; IDs 16337–16338 were inaccessible on both instances.
 
 The CSV contains:
 
-- `Name`, `Mail`, and `Courses` combined for unique-email matches
+- `Name`, `Mail`, and `Courses` combined for matching migrated IDs
 - `_old` and `_new` fields for instance-specific values such as `Description_old`
   and `Description_new`
 - `ID_old` and `ID_new` for the instance-local Moodle user IDs
 - `Profile_old` and `Profile_new` for links using the corresponding instance ID
 
-Profiles with a missing, malformed, one-sided, or duplicated email remain separate
-rows. Names are never used as identity keys because they are not guaranteed unique.
+Hidden, missing, changed, or duplicated emails do not prevent same-ID matches.
+Profiles with different IDs remain separate even if their emails match. Names and
+emails are never identity keys. New nonblank names and emails take precedence,
+with old values as fallback; courses are combined with new courses first. Moodle
+access-denied pages are skipped instead of being exported as profiles named `User`.
 Formula-like spreadsheet cells are apostrophe-prefixed in the final CSV only;
 raw checkpoint values remain unchanged. Empty runs never replace an existing
 output or delete recovery checkpoints.

@@ -25,6 +25,7 @@ from app.checkpoints import save as save_checkpoint
 from app.cli import parse_cli
 from app.constants import (
     COL_ID,
+    FIRST_UNMIGRATED_OLD_ID,
     base_urls,
     selectors_new,
     selectors_old,
@@ -105,7 +106,11 @@ def _scrape_with_interrupt_handling(
             http_new=config.http_new,
             http_old=config.http_old,
             profile_ids_new=profile_ids_new,
-            profile_ids_old=profile_ids_old,
+            profile_ids_old=[
+                profile_id
+                for profile_id in profile_ids_old
+                if profile_id < FIRST_UNMIGRATED_OLD_ID
+            ],
             paths=_checkpoint_paths(config),
             initial=initial,
             batch_size=CHECKPOINT_BATCH_SIZE,
@@ -149,7 +154,8 @@ def _resume_from_checkpoints(
     remaining_old = [
         profile_id
         for profile_id in profile_ids
-        if profile_id not in snapshot.old.completed_ids
+        if profile_id < FIRST_UNMIGRATED_OLD_ID
+        and profile_id not in snapshot.old.completed_ids
     ]
 
     if not remaining_new and not remaining_old:
