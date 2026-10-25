@@ -79,12 +79,7 @@ def _plain_output_filename(raw: str) -> Path:
     return Path(raw)
 
 
-def parse_cli(
-    argv: Sequence[str] | None = None,
-    environ: Mapping[str, str] | None = None,
-    prompt_text: Callable[[str], str] = input,
-    prompt_secret: Callable[[str], str] = getpass.getpass,
-) -> CliConfig:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Scrape Courses profiles from two instances",
     )
@@ -117,7 +112,130 @@ def parse_cli(
         help="Profile IDs to scrape",
     )
     id_group.add_argument("-m", type=_positive_int, help="Highest ID")
+    return parser
 
+
+def _resolve_cookie(
+    cookie_input: _CookieInput,
+    environment: Mapping[str, str],
+    prompt_secret: Callable[[str], str],
+    parser: argparse.ArgumentParser,
+) -> str:
+    value = cookie_input.explicit
+    if value is None:
+        value = environment.get(cookie_input.environment_name)
+    if value is None:
+        try:
+            value = prompt_secret(cookie_input.prompt)
+        except EOFError:
+            parser.error(
+                f"missing cookie: supply {cookie_input.flag}, set "
+                f"{cookie_input.environment_name}, or enter it at "
+                "the hidden prompt",
+            )
+    if not value or any(
+        not character.isprintable() or character.isspace() or character in ";,"
+        for character in value
+    ):
+        parser.error(
+            f"invalid cookie from {cookie_input.flag} or "
+            f"{cookie_input.environment_name}: must be nonblank and contain no "
+            "control characters, whitespace, semicolons, or commas",
+        )
+    return value
+
+
+def _resolve_cas_credentials(
+    arguments: _Arguments,
+    environment: Mapping[str, str],
+    prompt_text: Callable[[str], str],
+    prompt_secret: Callable[[str], str],
+    parser: argparse.ArgumentParser,
+) -> CasCredentials:
+    if arguments.c1 is not None or arguments.c2 is not None:
+        parser.error("--cas cannot be combined with -c1 or -c2")
+    username = arguments.cas_username
+    if username is None:
+        username = environment.get("COURSES_CAS_USERNAME")
+    if username is None:
+        try:
+            username = prompt_text("CAS username: ")
+        except EOFError:
+            parser.error(
+                "missing CAS username: supply --cas-username, set "
+                "COURSES_CAS_USERNAME, or enter it at the prompt",
+            )
+    password = environment.get("COURSES_CAS_PASSWORD")
+    if password is None:
+        try:
+            password = prompt_secret("CAS password: ")
+        except EOFError:
+            parser.error(
+                "missing CAS password: set COURSES_CAS_PASSWORD or enter it at "
+                "the hidden prompt",
+            )
+    _validate_cas_credentials(username, password, parser)
+    return CasCredentials(username=username, password=password)
+
+
+def _validate_cas_credentials(
+    username: str, password: str, parser: argparse.ArgumentParser
+) -> None:
+    if not username or any(
+        not character.isprintable() or character.isspace() for character in username
+    ):
+        parser.error("invalid CAS username: must be nonblank and contain no whitespace")
+    if not password.strip() or any(
+        not character.isprintable() for character in password
+    ):
+        parser.error("invalid CAS password: must be nonblank and contain no controls")
+
+
+def _resolve_manual_cookies(
+    arguments: _Arguments,
+    environment: Mapping[str, str],
+    prompt_secret: Callable[[str], str],
+    parser: argparse.ArgumentParser,
+) -> ManualCookies:
+    if arguments.cas_username is not None:
+        parser.error("--cas-username requires --cas")
+    return ManualCookies(
+        new=InstanceCookies(
+            moodle_session=_resolve_cookie(
+                _CookieInput(
+                    explicit=arguments.c1,
+                    environment_name="COURSES_COOKIE_NEW",
+                    flag="-c1",
+                    prompt="New Courses MoodleSession cookie: ",
+                ),
+                environment,
+                prompt_secret,
+                parser,
+            ),
+        ),
+        old=InstanceCookies(
+            moodle_session=_resolve_cookie(
+                _CookieInput(
+                    explicit=arguments.c2,
+                    environment_name="COURSES_COOKIE_OLD",
+                    flag="-c2",
+                    prompt="Old Courses MoodleSession cookie: ",
+                ),
+                environment,
+                prompt_secret,
+                parser,
+            ),
+        ),
+    )
+
+
+def parse_cli(
+    argv: Sequence[str] | None = None,
+    environ: Mapping[str, str] | None = None,
+    prompt_text: Callable[[str], str] = input,
+    prompt_secret: Callable[[str], str] = getpass.getpass,
+) -> CliConfig:
+    parser = _build_parser()
     raw_argv = tuple(sys.argv[1:] if argv is None else argv)
     if any(
         argument == "--cas-password" or argument.startswith("--cas-password=")
@@ -129,92 +247,14 @@ def parse_cli(
         )
     arguments = parser.parse_args(raw_argv, namespace=_Arguments())
     environment = os.environ if environ is None else environ
-
-    def resolve_cookie(cookie_input: _CookieInput) -> str:
-        value = cookie_input.explicit
-        if value is None:
-            value = environment.get(cookie_input.environment_name)
-        if value is None:
-            try:
-                value = prompt_secret(cookie_input.prompt)
-            except EOFError:
-                parser.error(
-                    f"missing cookie: supply {cookie_input.flag}, set "
-                    f"{cookie_input.environment_name}, or enter it at "
-                    "the hidden prompt",
-                )
-        if not value or any(
-            not character.isprintable() or character.isspace() or character in ";,"
-            for character in value
-        ):
-            parser.error(
-                f"invalid cookie from {cookie_input.flag} or "
-                f"{cookie_input.environment_name}: must be nonblank and contain no "
-                "control characters, whitespace, semicolons, or commas",
-            )
-        return value
-
     authentication: ManualCookies | CasCredentials
     if arguments.cas:
-        if arguments.c1 is not None or arguments.c2 is not None:
-            parser.error("--cas cannot be combined with -c1 or -c2")
-        username = arguments.cas_username
-        if username is None:
-            username = environment.get("COURSES_CAS_USERNAME")
-        if username is None:
-            try:
-                username = prompt_text("CAS username: ")
-            except EOFError:
-                parser.error(
-                    "missing CAS username: supply --cas-username, set "
-                    "COURSES_CAS_USERNAME, or enter it at the prompt",
-                )
-        password = environment.get("COURSES_CAS_PASSWORD")
-        if password is None:
-            try:
-                password = prompt_secret("CAS password: ")
-            except EOFError:
-                parser.error(
-                    "missing CAS password: set COURSES_CAS_PASSWORD or enter it at "
-                    "the hidden prompt",
-                )
-        if not username or any(
-            not character.isprintable() or character.isspace() for character in username
-        ):
-            parser.error(
-                "invalid CAS username: must be nonblank and contain no whitespace"
-            )
-        if not password.strip() or any(
-            not character.isprintable() for character in password
-        ):
-            parser.error(
-                "invalid CAS password: must be nonblank and contain no controls"
-            )
-        authentication = CasCredentials(username=username, password=password)
+        authentication = _resolve_cas_credentials(
+            arguments, environment, prompt_text, prompt_secret, parser
+        )
     else:
-        if arguments.cas_username is not None:
-            parser.error("--cas-username requires --cas")
-        authentication = ManualCookies(
-            new=InstanceCookies(
-                moodle_session=resolve_cookie(
-                    _CookieInput(
-                        explicit=arguments.c1,
-                        environment_name="COURSES_COOKIE_NEW",
-                        flag="-c1",
-                        prompt="New Courses MoodleSession cookie: ",
-                    ),
-                ),
-            ),
-            old=InstanceCookies(
-                moodle_session=resolve_cookie(
-                    _CookieInput(
-                        explicit=arguments.c2,
-                        environment_name="COURSES_COOKIE_OLD",
-                        flag="-c2",
-                        prompt="Old Courses MoodleSession cookie: ",
-                    ),
-                ),
-            ),
+        authentication = _resolve_manual_cookies(
+            arguments, environment, prompt_secret, parser
         )
 
     profile_ids: range | tuple[int, ...]

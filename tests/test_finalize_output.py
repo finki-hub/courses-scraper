@@ -41,10 +41,12 @@ def test_empty_finalization_preserves_prior_output_and_checkpoints(
     config.checkpoint_old.write_text("old checkpoint", encoding="utf-8")
 
     # When both raw frames would produce an empty final export.
+    raw_old = pd.DataFrame()
+    raw_new = pd.DataFrame()
     with pytest.raises(EmptyExportError):
         scraper._finalize_output(
-            pd.DataFrame(),
-            pd.DataFrame(),
+            raw_old,
+            raw_new,
             tmp_path,
             output.name,
             config,
@@ -73,10 +75,12 @@ def test_final_write_failure_preserves_checkpoints(
     monkeypatch.setattr(scraper, "export_profiles", fail_write)
 
     # When the final durable write fails.
+    raw_old = pd.DataFrame([row])
+    raw_new = pd.DataFrame(columns=columns)
     with pytest.raises(OSError, match="final write fault"):
         scraper._finalize_output(
-            pd.DataFrame([row]),
-            pd.DataFrame(columns=columns),
+            raw_old,
+            raw_new,
             tmp_path,
             "profiles.csv",
             config,

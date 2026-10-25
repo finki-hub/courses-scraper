@@ -87,11 +87,10 @@ def test_transport_failure_threshold_aborts_instance(
     )
 
     # When the documented threshold is reached, then scraping aborts.
+    config = _config()
+    profile_ids = list(range(1, TRANSPORT_FAILURE_THRESHOLD + 1))
     with pytest.raises(TransportFailureLimitError) as caught:
-        scraper.get_profiles(
-            _config(),
-            list(range(1, TRANSPORT_FAILURE_THRESHOLD + 1)),
-        )
+        scraper.get_profiles(config, profile_ids)
 
     assert caught.value.failure_count == TRANSPORT_FAILURE_THRESHOLD
     assert caught.value.outcome_count == TRANSPORT_FAILURE_THRESHOLD
@@ -118,11 +117,10 @@ def test_transport_failure_threshold_shuts_down_without_waiting(
     monkeypatch.setattr(profile_collection, "as_completed", lambda _futures: completed)
 
     # When the observed transport failures exceed the abort threshold.
+    config = _config(threads=4)
+    profile_ids = list(range(1, TRANSPORT_FAILURE_THRESHOLD + 2))
     with pytest.raises(TransportFailureLimitError):
-        scraper.get_profiles(
-            _config(threads=4),
-            list(range(1, TRANSPORT_FAILURE_THRESHOLD + 2)),
-        )
+        scraper.get_profiles(config, profile_ids)
 
     # Then pending work is cancelled without waiting for a stuck worker.
     executor.shutdown.assert_called_once_with(wait=False, cancel_futures=True)
@@ -174,8 +172,9 @@ def test_transport_failure_rate_is_checked_after_final_success(
     monkeypatch.setattr(scraper, "fetch_profile", fetch)
 
     # When collection observes the success that completes the rate sample.
+    config = _config()
     with pytest.raises(TransportFailureLimitError) as caught:
-        scraper.get_profiles(_config(), [1, 2, 3])
+        scraper.get_profiles(config, [1, 2, 3])
 
     # Then the completed 2/3 failure rate aborts with accurate diagnostics.
     assert "2 of 3 observed outcomes" in str(caught.value)
@@ -200,8 +199,9 @@ def test_transport_failure_rate_is_checked_after_final_empty(
     monkeypatch.setattr(scraper, "fetch_profile", fetch)
 
     # When collection observes the empty outcome that completes the sample.
+    config = _config()
     with pytest.raises(TransportFailureLimitError):
-        scraper.get_profiles(_config(), [1, 2, 3])
+        scraper.get_profiles(config, [1, 2, 3])
 
 
 def test_submission_failure_shuts_down_owned_executor(
@@ -217,8 +217,9 @@ def test_submission_failure_shuts_down_owned_executor(
     )
 
     # When profile collection attempts to submit work.
+    config = _config()
     with pytest.raises(RuntimeError, match="submission failed"):
-        scraper.get_profiles(_config(), [1])
+        scraper.get_profiles(config, [1])
 
     # Then its owned executor is deterministically shut down.
     executor.shutdown.assert_called_once_with(wait=True)
@@ -262,8 +263,9 @@ def test_interrupt_closes_created_worker_sessions(
     )
 
     # When result collection is interrupted.
+    config = _config()
     with pytest.raises(KeyboardInterrupt):
-        scraper.get_profiles(_config(), [1])
+        scraper.get_profiles(config, [1])
 
     # Then nonblocking shutdown still releases every created session.
     executor.shutdown.assert_called_once_with(wait=False, cancel_futures=True)
@@ -284,8 +286,9 @@ def test_all_transport_failures_abort_small_batch(
     )
 
     # When the batch finishes, then an outage cannot be reported as empty success.
+    config = _config()
     with pytest.raises(TransportFailureLimitError) as caught:
-        scraper.get_profiles(_config(), [1, 2])
+        scraper.get_profiles(config, [1, 2])
 
     assert caught.value.failure_count == 2
     assert caught.value.outcome_count == 2

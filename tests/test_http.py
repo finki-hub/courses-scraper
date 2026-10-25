@@ -176,8 +176,9 @@ def test_preflight_rejects_unauthenticated_or_unusable_responses(
     session.get.return_value = response
 
     # When the instance preflight runs, then it fails closed with a typed reason.
+    config = _config()
     with pytest.raises(PreflightError) as caught:
-        preflight_instance(session, _config())
+        preflight_instance(session, config)
 
     assert caught.value.reason is reason
 
@@ -189,8 +190,9 @@ def test_preflight_wraps_transport_failure() -> None:
 
     # When the instance preflight runs, then transport failure cannot become
     # an empty scrape.
+    config = _config()
     with pytest.raises(PreflightError) as caught:
-        preflight_instance(session, _config())
+        preflight_instance(session, config)
 
     assert caught.value.reason is PreflightFailureReason.TRANSPORT
 
@@ -244,8 +246,9 @@ def test_fetch_profile_does_not_treat_http_failures_as_empty(
     session.get.return_value = _response(status_code)
 
     # When the response is classified, then it cannot become completed empty work.
+    config = _config()
     with pytest.raises(ProfileRequestError) as caught:
-        fetch_profile(session, 42, _config())
+        fetch_profile(session, 42, config)
 
     assert caught.value.profile_id == 42
     assert caught.value.reason is ProfileFailureReason.HTTP_STATUS
@@ -258,8 +261,9 @@ def test_fetch_profile_does_not_follow_or_complete_redirects() -> None:
     session.get.return_value = _response(302, location="/login/index.php")
 
     # When the profile is fetched, then redirect handling remains explicit.
+    config = _config()
     with pytest.raises(ProfileRequestError) as caught:
-        fetch_profile(session, 42, _config())
+        fetch_profile(session, 42, config)
 
     session.get.assert_called_once_with(
         f"{BASE_URL}/user/profile.php?id=42&showallcourses=1",
@@ -281,8 +285,9 @@ def test_fetch_profile_does_not_complete_login_page_response() -> None:
     session.get.return_value = response
 
     # When the response is classified, then it cannot become completed empty work.
+    config = _config()
     with pytest.raises(ProfileRequestError) as caught:
-        fetch_profile(session, 42, _config())
+        fetch_profile(session, 42, config)
 
     assert caught.value.profile_id == 42
     assert caught.value.reason is ProfileFailureReason.LOGIN_RESPONSE

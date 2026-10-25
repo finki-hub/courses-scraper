@@ -48,8 +48,9 @@ def test_empty_export_preserves_existing_destination(tmp_path: Path) -> None:
     destination.write_text("prior output", encoding="utf-8")
 
     # When final export is attempted.
+    frame = pd.DataFrame(columns=["ID"])
     with pytest.raises(EmptyExportError, match="empty"):
-        export_profiles(pd.DataFrame(columns=["ID"]), destination)
+        export_profiles(frame, destination)
 
     # Then the prior output is untouched.
     assert destination.read_text(encoding="utf-8") == "prior output"

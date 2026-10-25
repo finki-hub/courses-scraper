@@ -126,9 +126,10 @@ def test_authenticate_instance_rejects_missing_login_form() -> None:
     session.__enter__.return_value = session
     session.get.return_value = _response("<html><p>Not a CAS login form</p></html>")
 
+    credentials = auth.CasCredentials("student", CREDENTIAL_VALUE)
     with pytest.raises(auth.CasAuthenticationError) as caught:
         auth.authenticate_instance(
-            auth.CasCredentials("student", CREDENTIAL_VALUE),
+            credentials,
             BASE_URL,
             session_factory=lambda: session,
         )
@@ -161,9 +162,10 @@ def test_authenticate_instance_rejects_incomplete_service_cookie_set() -> None:
 
     # When authentication completes without the expected complete cookie set.
     assert callable(authenticate)
+    credentials = auth.CasCredentials(username="student", password=CREDENTIAL_VALUE)
     with pytest.raises(error_type):
         authenticate(
-            auth.CasCredentials(username="student", password=CREDENTIAL_VALUE),
+            credentials,
             BASE_URL,
             session_factory=lambda: session,
         )
@@ -185,9 +187,10 @@ def test_authenticate_instance_rejects_empty_service_cookie() -> None:
     session.cookies = cookie_session.cookies
     session.prepare_request.side_effect = cookie_session.prepare_request
 
+    credentials = auth.CasCredentials("student", CREDENTIAL_VALUE)
     with pytest.raises(auth.CasAuthenticationError) as caught:
         auth.authenticate_instance(
-            auth.CasCredentials("student", CREDENTIAL_VALUE),
+            credentials,
             BASE_URL,
             session_factory=lambda: session,
         )
@@ -225,9 +228,10 @@ def test_authenticate_instance_rejects_credential_replaying_redirect() -> None:
     authenticate = auth.authenticate_instance
 
     # When the redirect is evaluated, then credentials are never replayed.
+    credentials = auth.CasCredentials("student", CREDENTIAL_VALUE)
     with pytest.raises(auth.CasAuthenticationError) as caught:
         authenticate(
-            auth.CasCredentials("student", CREDENTIAL_VALUE),
+            credentials,
             BASE_URL,
             session_factory=lambda: session,
         )

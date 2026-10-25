@@ -112,14 +112,9 @@ def test_failed_generation_write_preserves_prior_manifest_selection(
 
     monkeypatch.setattr(checkpoints, "write_csv_atomically", fail_second_csv)
 
+    snapshot = _snapshot(new_rows=(1, 3), completed_new=frozenset({1, 3}))
     with pytest.raises(OSError, match="injected write fault"):
-        checkpoints.save(
-            paths,
-            _snapshot(
-                new_rows=(1, 3),
-                completed_new=frozenset({1, 3}),
-            ),
-        )
+        checkpoints.save(paths, snapshot)
 
     assert paths.manifest.read_bytes() == original_manifest
     assert set(tmp_path.glob("checkpoint_*.csv")) == original_generation_files
@@ -211,8 +206,9 @@ def test_save_rejects_invalid_checkpoint_membership(
         old=InstanceCheckpoint(_frame(), frozenset()),
     )
 
+    paths = CheckpointPaths.for_directory(tmp_path)
     with pytest.raises(CheckpointValidationError):
-        checkpoints.save(CheckpointPaths.for_directory(tmp_path), snapshot)
+        checkpoints.save(paths, snapshot)
 
 
 def test_load_ignores_orphan_generation_files(tmp_path: Path) -> None:
@@ -275,8 +271,9 @@ def test_manifest_write_failure_keeps_prior_committed_generation(
 
     monkeypatch.setattr(checkpoints, "_write_manifest_atomically", fail_manifest)
 
+    snapshot = _snapshot()
     with pytest.raises(OSError, match="manifest fault"):
-        checkpoints.save(paths, _snapshot())
+        checkpoints.save(paths, snapshot)
 
     assert all(path.exists() for path in prior_generation_files)
 
