@@ -96,9 +96,10 @@ def test_authenticate_instance_rejects_unsafe_second_redirect(
     ]
     session.post.return_value = _response(status_code=302, location=ticket_url)
 
+    credentials = auth.CasCredentials("student", "credential-value")
     with pytest.raises(auth.CasAuthenticationError) as caught:
         auth.authenticate_instance(
-            auth.CasCredentials("student", "credential-value"),
+            credentials,
             BASE_URL,
             session_factory=lambda: session,
         )
@@ -113,9 +114,10 @@ def test_authenticate_instance_rejects_initial_cas_redirect() -> None:
         status_code=302, location="https://example.com"
     )
 
+    credentials = auth.CasCredentials("student", "credential-value")
     with pytest.raises(auth.CasAuthenticationError) as caught:
         auth.authenticate_instance(
-            auth.CasCredentials("student", "credential-value"),
+            credentials,
             BASE_URL,
             session_factory=lambda: session,
         )
@@ -139,9 +141,10 @@ def test_authenticate_instance_rejects_redirect_loop() -> None:
     ]
     session.post.return_value = _response(status_code=302, location=ticket_url)
 
+    credentials = auth.CasCredentials("student", "credential-value")
     with pytest.raises(auth.CasAuthenticationError) as caught:
         auth.authenticate_instance(
-            auth.CasCredentials("student", "credential-value"),
+            credentials,
             BASE_URL,
             session_factory=lambda: session,
         )

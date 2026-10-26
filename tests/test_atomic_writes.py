@@ -68,8 +68,9 @@ def test_atomic_csv_write_preserves_destination_when_serialization_fails(
     monkeypatch.setattr(pd.DataFrame, "to_csv", fail_after_partial_write)
 
     # When serialization fails during an atomic write.
+    frame = pd.DataFrame({"ID": [1]})
     with pytest.raises(OSError, match="disk full"):
-        write_csv_atomically(pd.DataFrame({"ID": [1]}), destination)
+        write_csv_atomically(frame, destination)
 
     # Then the prior destination remains intact and partial files are removed.
     assert destination.read_text(encoding="utf-8") == "original"

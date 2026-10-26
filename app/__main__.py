@@ -216,7 +216,12 @@ def main() -> None:
                 cookies_new = authenticate_instance(credentials, base_urls["new"])
                 cookies_old = authenticate_instance(credentials, base_urls["old"])
             except CasAuthenticationError as error:
-                logger.error("%s", error)  # noqa: TRY400 - expected credential failure
+                # Log only the safe public error, never its credential-bearing chain.
+                safe_error = RuntimeError(str(error))
+                logger.exception(
+                    "CAS authentication failed",
+                    exc_info=(RuntimeError, safe_error, None),
+                )
                 raise SystemExit(2) from error
             verify_all_instances = True
         case unreachable:

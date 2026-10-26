@@ -71,8 +71,8 @@ def _normalize_side(
 
 
 def _coalesce_field(merged: pd.DataFrame, field: str) -> None:
-    old = _series(merged, f"{field}_old").fillna("").astype(str).str.strip()
-    new = _series(merged, f"{field}_new").fillna("").astype(str).str.strip()
+    old = _series(merged, f"{field}_old").astype("string").fillna("").str.strip()
+    new = _series(merged, f"{field}_new").astype("string").fillna("").str.strip()
     merged[field] = new.where(new != "", old)
 
 
@@ -116,8 +116,8 @@ def merge_profiles(df_old: pd.DataFrame, df_new: pd.DataFrame) -> pd.DataFrame:
     for field in (COL_NAME, COL_MAIL):
         _coalesce_field(merged, field)
 
-    old_courses = _series(merged, f"{COL_COURSES}_old").fillna("").astype(str)
-    new_courses = _series(merged, f"{COL_COURSES}_new").fillna("").astype(str)
+    old_courses = _series(merged, f"{COL_COURSES}_old").astype("string").fillna("")
+    new_courses = _series(merged, f"{COL_COURSES}_new").astype("string").fillna("")
     merged[COL_COURSES] = [
         _merge_courses(old_value, new_value)
         for old_value, new_value in zip(old_courses, new_courses, strict=True)

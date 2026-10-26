@@ -22,11 +22,11 @@ def test_live_cas_authenticates_both_instances() -> None:
     credentials = CasCredentials(username=username, password=password)
 
     # When each Courses service authenticates and accesses its profile page.
-    try:
-        for base_url, selectors in (
-            (base_urls["new"], selectors_new),
-            (base_urls["old"], selectors_old),
-        ):
+    for base_url, selectors in (
+        (base_urls["new"], selectors_new),
+        (base_urls["old"], selectors_old),
+    ):
+        try:
             cookies = authenticate_instance(credentials, base_url)
             config = InstanceHttpConfig(
                 base_url=base_url,
@@ -36,7 +36,14 @@ def test_live_cas_authenticates_both_instances() -> None:
             )
             with create_session(config) as session:
                 preflight_instance(session, config)
-    except (CasAuthenticationError, PreflightError) as error:
-        pytest.fail(str(error), pytrace=False)
+        except CasAuthenticationError as error:
+            # Transport causes can contain service tickets; expose only safe fields.
+            raise CasAuthenticationError(
+                error.service_url, error.reason, error.missing_cookies
+            ) from None
+        except PreflightError as error:
+            raise PreflightError(
+                error.base_url, error.reason, error.status_code
+            ) from None
 
     # Then both services returned authenticated, parseable profile pages.

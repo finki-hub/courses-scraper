@@ -62,6 +62,15 @@ def _record_outcome(
             return 0
 
 
+def _cancel_pending(
+    futures: dict[Future[ProfileFetchOutcome], int],
+    executor: ThreadPoolExecutor,
+) -> None:
+    for pending in futures:
+        pending.cancel()
+    executor.shutdown(wait=False, cancel_futures=True)
+
+
 def collect_profiles(
     config: InstanceHttpConfig,
     profile_ids: Sequence[int],
@@ -111,9 +120,7 @@ def collect_profiles(
                 len(requested_ids),
             ):
                 aborted = True
-                for pending in futures:
-                    pending.cancel()
-                executor.shutdown(wait=False, cancel_futures=True)
+                _cancel_pending(futures, executor)
                 raise TransportFailureLimitError(
                     base_url=config.base_url,
                     failure_count=transport_failures,
@@ -121,9 +128,7 @@ def collect_profiles(
                 )
     except KeyboardInterrupt:
         aborted = True
-        for pending in futures:
-            pending.cancel()
-        executor.shutdown(wait=False, cancel_futures=True)
+        _cancel_pending(futures, executor)
         raise
     finally:
         if not aborted:
