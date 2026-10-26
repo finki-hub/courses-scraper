@@ -44,7 +44,7 @@ class HistoricalSnapshot:
 def _normalize_side_id(value: str, side: str, seen: set[str]) -> str:
     if not value:
         return ""
-    if not re.fullmatch(r"[0-9]+", value) or int(value) <= 0:
+    if not re.fullmatch(r"\d+", value, flags=re.ASCII) or int(value) <= 0:
         raise HistoricalDataError
     value = str(int(value))
     if value in seen:
@@ -90,7 +90,7 @@ def load_historical_snapshot(path: Path) -> HistoricalSnapshot:
         _normalize_ids(rows)
         frame = pd.DataFrame(rows, columns=list(MERGED_COLUMNS), dtype=str)
         return HistoricalSnapshot(frame, resolved, hashlib.sha256(raw).hexdigest())
-    except (OSError, UnicodeError, csv.Error, ValueError):
+    except (OSError, csv.Error, ValueError):
         raise HistoricalDataError from None
 
 

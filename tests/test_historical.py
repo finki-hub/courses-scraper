@@ -92,6 +92,7 @@ def test_refresh_preserves_history_and_is_repeatable(tmp_path: Path) -> None:
         [_row(new="1.0")],
         [_row(new="0")],
         [_row(new="-1")],
+        [_row(new="\u0661")],
         [_row(new="1"), _row(new="01")],
         [_row("2"), _row("2")],
     ],
