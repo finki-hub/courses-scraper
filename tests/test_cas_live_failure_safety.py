@@ -65,7 +65,7 @@ def test_live_failure_traceback_hides_transport_secrets(
         safe_reason = "transport"
 
     with pytest.raises(expected_error) as caught:
-        test_cas_live.test_live_cas_authenticates_both_instances()
+        test_cas_live._authenticate_and_preflight_instance(instance)
 
     rendered = "".join(traceback.format_exception(caught.value))
     assert ticket not in rendered
@@ -74,6 +74,10 @@ def test_live_failure_traceback_hides_transport_secrets(
     assert base_urls[instance] in rendered
     assert caught.value.__cause__ is None
     assert caught.value.__suppress_context__
-    expected_calls = 1 if instance == "new" else 2
-    assert authenticate.call_count == expected_calls
-    assert preflight.call_count == expected_calls - (stage == "authentication")
+    authenticate.assert_called_once()
+    assert authenticate.call_args.args[1] == base_urls[instance]
+    if stage == "authentication":
+        preflight.assert_not_called()
+    else:
+        preflight.assert_called_once()
+        assert preflight.call_args.args[1].base_url == base_urls[instance]

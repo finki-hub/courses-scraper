@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True, slots=True)
 class CoordinatorPlan:
     http_new: InstanceHttpConfig
-    http_old: InstanceHttpConfig
+    http_old: InstanceHttpConfig | None
     profile_ids_new: Sequence[int]
     profile_ids_old: Sequence[int]
     paths: CheckpointPaths
@@ -98,14 +98,17 @@ def _initial_progress(plan: CoordinatorPlan) -> ProgressState:
 def _active_sides(
     plan: CoordinatorPlan,
 ) -> tuple[tuple[str, InstanceHttpConfig, Sequence[int]], ...]:
-    return tuple(
-        side
-        for side in (
-            ("new", plan.http_new, plan.profile_ids_new),
-            ("old", plan.http_old, plan.profile_ids_old),
-        )
-        if side[2]
-    )
+    sides = []
+    for name, config, ids in (
+        ("new", plan.http_new, plan.profile_ids_new),
+        ("old", plan.http_old, plan.profile_ids_old),
+    ):
+        if not ids:
+            continue
+        if config is None:
+            raise ValueError(f"HTTP configuration required for {name} work")
+        sides.append((name, config, ids))
+    return tuple(sides)
 
 
 def _preflight(

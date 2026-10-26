@@ -11,6 +11,7 @@ import pandas as pd
 from app.auth import (
     CasAuthenticationError,
     CasCredentials,
+    InstanceCookies,
     ManualCookies,
     authenticate_instance,
 )
@@ -22,7 +23,7 @@ from app.checkpoints import (
 from app.checkpoints import clear as clear_checkpoints
 from app.checkpoints import load as load_checkpoint
 from app.checkpoints import save as save_checkpoint
-from app.cli import parse_cli
+from app.cli import CliConfig, parse_cli
 from app.constants import (
     COL_ID,
     FIRST_UNMIGRATED_OLD_ID,
@@ -33,6 +34,11 @@ from app.constants import (
 from app.coordinator import CoordinatorPlan
 from app.coordinator import run as run_coordinator
 from app.export import export_profiles
+from app.historical import (
+    HistoricalSnapshot,
+    load_historical_snapshot,
+    merge_historical_snapshot,
+)
 from app.http import (
     InstanceHttpConfig,
     create_session,
@@ -54,7 +60,7 @@ POLL_INTERVAL_SECONDS: Final = 0.25
 @dataclass(frozen=True, slots=True)
 class ScrapeConfig:
     http_new: InstanceHttpConfig
-    http_old: InstanceHttpConfig
+    http_old: InstanceHttpConfig | None
     checkpoint_new: Path
     checkpoint_old: Path
 
@@ -140,11 +146,18 @@ def _resume_from_checkpoints(
     logger.info("Loading from checkpoints...")
     paths = _checkpoint_paths(config)
     snapshot = load_checkpoint(paths, tuple(profile_ids))
+    old_ids = profile_ids if config.http_old is not None else ()
     if snapshot is None:
         return _scrape_with_interrupt_handling(
             config,
             profile_ids,
-            profile_ids,
+            old_ids,
+        )
+    if config.http_old is None and (
+        not snapshot.old.frame.empty or snapshot.old.completed_ids
+    ):
+        raise ValueError(
+            "New-only checkpoint must not contain old profiles or completed IDs"
         )
     remaining_new = [
         profile_id
@@ -153,7 +166,7 @@ def _resume_from_checkpoints(
     ]
     remaining_old = [
         profile_id
-        for profile_id in profile_ids
+        for profile_id in old_ids
         if profile_id < FIRST_UNMIGRATED_OLD_ID
         and profile_id not in snapshot.old.completed_ids
     ]
@@ -205,16 +218,58 @@ def main() -> None:
 
     cli_config = parse_cli()
     start = time.time()
-    profile_ids = cli_config.profile_ids
+
+    historical = _load_history(cli_config)
+    cookies_new, cookies_old, verify_all_instances = _authenticate(cli_config)
+    config = _build_config(cli_config, cookies_new, cookies_old, historical)
+    _run_and_export(cli_config, config, historical, verify_all_instances)
+    logger.info("Finished in %.2f seconds", time.time() - start)
+
+
+def _load_history(cli_config: CliConfig) -> HistoricalSnapshot | None:
+    if cli_config.instances == "both":
+        if cli_config.historical is not None:
+            raise ValueError("--historical requires --instances new")
+        return None
+    if cli_config.historical is None:
+        raise ValueError("--instances new requires --historical")
+    source = cli_config.historical.resolve()
+    output = cli_config.output_file.resolve()
+    if source == output:
+        raise ValueError("Historical source must not be the output destination")
+    checkpoint_root = (
+        cli_config.output_file.parent / ".checkpoints-new-only"
+    ).resolve()
+    if source.is_relative_to(checkpoint_root):
+        raise ValueError("Historical source must not be inside new-only checkpoints")
+    snapshot = load_historical_snapshot(source)
+    logger.info(
+        "New-only mode: reusing historical old data from %s (SHA256 %s)",
+        snapshot.path,
+        snapshot.sha256,
+    )
+    return snapshot
+
+
+def _authenticate(
+    cli_config: CliConfig,
+) -> tuple[InstanceCookies, InstanceCookies | None, bool]:
 
     match cli_config.authentication:
         case ManualCookies(new=cookies_new, old=cookies_old):
             verify_all_instances = False
         case CasCredentials() as credentials:
-            logger.info("Authenticating both Courses instances through CAS...")
+            logger.info(
+                "Authenticating %s Courses instance(s) through CAS...",
+                cli_config.instances,
+            )
             try:
                 cookies_new = authenticate_instance(credentials, base_urls["new"])
-                cookies_old = authenticate_instance(credentials, base_urls["old"])
+                cookies_old = (
+                    authenticate_instance(credentials, base_urls["old"])
+                    if cli_config.instances == "both"
+                    else None
+                )
             except CasAuthenticationError as error:
                 # Log only the safe public error, never its credential-bearing chain.
                 safe_error = RuntimeError(str(error))
@@ -227,8 +282,31 @@ def main() -> None:
         case unreachable:
             assert_never(unreachable)
 
-    output_path = cli_config.output_file.parent
+    if cli_config.instances == "both" and cookies_old is None:
+        raise ValueError("Old cookies required for both instances")
+    return cookies_new, cookies_old, verify_all_instances
 
+
+def _build_config(
+    cli_config: CliConfig,
+    cookies_new: InstanceCookies,
+    cookies_old: InstanceCookies | None,
+    historical: HistoricalSnapshot | None,
+) -> ScrapeConfig:
+    output_path = cli_config.output_file.parent
+    if historical is not None:
+        output_path = output_path / ".checkpoints-new-only" / historical.sha256
+
+    http_old = None
+    if historical is None:
+        if cookies_old is None:
+            raise ValueError("Old cookies required for both instances")
+        http_old = InstanceHttpConfig(
+            base_url=base_urls["old"],
+            cookies=cookies_old,
+            selectors=selectors_old,
+            threads=cli_config.threads,
+        )
     config = ScrapeConfig(
         http_new=InstanceHttpConfig(
             base_url=base_urls["new"],
@@ -236,15 +314,20 @@ def main() -> None:
             selectors=selectors_new,
             threads=cli_config.threads,
         ),
-        http_old=InstanceHttpConfig(
-            base_url=base_urls["old"],
-            cookies=cookies_old,
-            selectors=selectors_old,
-            threads=cli_config.threads,
-        ),
+        http_old=http_old,
         checkpoint_new=output_path / "checkpoint_new.csv",
         checkpoint_old=output_path / "checkpoint_old.csv",
     )
+    return config
+
+
+def _run_and_export(
+    cli_config: CliConfig,
+    config: ScrapeConfig,
+    historical: HistoricalSnapshot | None,
+    verify_all_instances: bool,
+) -> None:
+    profile_ids = cli_config.profile_ids
 
     checkpoint_paths = _checkpoint_paths(config)
     has_checkpoint = (
@@ -254,21 +337,40 @@ def main() -> None:
     )
     if verify_all_instances and has_checkpoint:
         for http_config in (config.http_new, config.http_old):
+            if http_config is None:
+                continue
             with create_session(http_config) as session:
                 preflight_instance(session, http_config)
 
     if has_checkpoint:
         df_new, df_old = _resume_from_checkpoints(config, profile_ids)
     else:
-        logger.info("Scraping both instances concurrently...")
+        logger.info("Scraping %s instance(s)...", cli_config.instances)
         df_new, df_old = _scrape_with_interrupt_handling(
             config,
             profile_ids,
-            profile_ids,
+            profile_ids if config.http_old is not None else (),
         )
 
-    _finalize_output(df_old, df_new, output_path, cli_config.output_file.name, config)
-    logger.info("Finished in %.2f seconds", time.time() - start)
+    if historical is None:
+        _finalize_output(
+            df_old,
+            df_new,
+            cli_config.output_file.parent,
+            cli_config.output_file.name,
+            config,
+        )
+        return
+    if df_new.empty:
+        raise ValueError("New-only scrape returned no fresh profiles")
+    combined = merge_historical_snapshot(historical, df_new)
+    export_profiles(combined, cli_config.output_file)
+    clear_checkpoints(_checkpoint_paths(config))
+    logger.info(
+        "Written %d profiles to %s; historical old data reused",
+        len(combined),
+        cli_config.output_file,
+    )
 
 
 if __name__ == "__main__":

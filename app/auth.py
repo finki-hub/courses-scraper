@@ -46,7 +46,7 @@ class InstanceCookies:
 @dataclass(frozen=True, slots=True)
 class ManualCookies:
     new: InstanceCookies
-    old: InstanceCookies
+    old: InstanceCookies | None
 
 
 @unique

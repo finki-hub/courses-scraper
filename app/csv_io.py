@@ -21,9 +21,11 @@ def write_csv_atomically(df: pd.DataFrame, destination: Path) -> None:
 
     with TemporaryDirectory(
         dir=target.parent,
-        prefix=f".{destination.name}.",
+        prefix=".csv-",
     ) as temporary_directory:
-        temporary_path = Path(temporary_directory) / destination.name
+        temporary_path = Path(temporary_directory) / (
+            "data" + "".join(destination.suffixes)
+        )
         df.to_csv(temporary_path, index=False)
         with temporary_path.open("r+b") as temporary_file:
             os.fsync(temporary_file.fileno())
