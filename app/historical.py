@@ -75,16 +75,22 @@ def load_historical_snapshot(path: Path) -> HistoricalSnapshot:
     try:
         resolved = path.resolve()
         raw = resolved.read_bytes()
-        reader = csv.reader(
-            io.StringIO(raw.decode("utf-8-sig"), newline=""), strict=True
-        )
-        if next(reader, None) != list(MERGED_COLUMNS):
-            raise HistoricalDataError
-        rows = []
-        for values in reader:
-            if len(values) != len(MERGED_COLUMNS):
+        previous_limit = csv.field_size_limit()
+        try:
+            # No decoded field can exceed the size of the already-loaded bytes.
+            csv.field_size_limit(max(previous_limit, len(raw)))
+            reader = csv.reader(
+                io.StringIO(raw.decode("utf-8-sig"), newline=""), strict=True
+            )
+            if next(reader, None) != list(MERGED_COLUMNS):
                 raise HistoricalDataError
-            rows.append(dict(zip(MERGED_COLUMNS, values, strict=True)))
+            rows = []
+            for values in reader:
+                if len(values) != len(MERGED_COLUMNS):
+                    raise HistoricalDataError
+                rows.append(dict(zip(MERGED_COLUMNS, values, strict=True)))
+        finally:
+            csv.field_size_limit(previous_limit)
         if not rows:
             raise HistoricalDataError
         _normalize_ids(rows)

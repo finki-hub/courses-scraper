@@ -1,3 +1,4 @@
+import csv
 import hashlib
 from pathlib import Path
 
@@ -136,6 +137,55 @@ def test_export_does_not_double_escape_history(tmp_path: Path) -> None:
     reloaded = load_historical_snapshot(tmp_path / "out.csv").frame
     assert reloaded.iloc[0]["Name"] == "'=safe"
     assert reloaded.iloc[0]["Description_new"] == "'@safe"
+
+
+@pytest.mark.parametrize("field", ["Description_new", "Courses"])
+def test_large_export_roundtrip(tmp_path: Path, field: str) -> None:
+    content = 'Synthetic, "quoted" café\r\nNext line\n' * 5000
+    assert len(content) > 131072
+    frame = pd.DataFrame([_row(new="1", **{field: content})])
+    path = tmp_path / "large.csv"
+    export_profiles(frame, path)
+    raw = path.read_bytes()
+    previous_limit = csv.field_size_limit(131072)
+    try:
+        snapshot = load_historical_snapshot(path)
+        assert csv.field_size_limit() == 131072
+    finally:
+        csv.field_size_limit(previous_limit)
+    pd.testing.assert_frame_equal(snapshot.frame, frame)
+    assert snapshot.frame.iloc[0][field] == content
+    assert snapshot.sha256 == hashlib.sha256(raw).hexdigest()
+    assert path.read_bytes() == raw
+
+
+@pytest.mark.parametrize("failure", ["quoting", "schema", "row", "id", "encoding"])
+def test_large_invalid_csv_restores_limit(tmp_path: Path, failure: str) -> None:
+    path = tmp_path / "invalid-large.csv"
+    content = "synthetic " * 15000
+    frame = pd.DataFrame([_row(new="1", Description_new=content)])
+    export_profiles(frame, path)
+    raw = path.read_bytes()
+    if failure == "quoting":
+        raw += ('"' + content).encode()
+    elif failure == "schema":
+        raw = b"invalid" + raw
+    elif failure == "row":
+        raw += (content + "\n").encode()
+    elif failure == "id":
+        raw = raw.replace(b"\n,1,", b"\n,0,", 1)
+    else:
+        raw += b"\xff"
+    path.write_bytes(raw)
+    previous_limit = csv.field_size_limit(131072)
+    try:
+        with pytest.raises(HistoricalDataError) as error:
+            load_historical_snapshot(path)
+        assert str(error.value) == "historical snapshot is unreadable or invalid"
+        assert csv.field_size_limit() == 131072
+    finally:
+        csv.field_size_limit(previous_limit)
+    assert path.read_bytes() == raw
 
 
 @pytest.mark.parametrize(
