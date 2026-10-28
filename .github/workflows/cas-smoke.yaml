@@ -1,8 +1,6 @@
 name: CAS Smoke Test
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
