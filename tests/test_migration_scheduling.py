@@ -39,6 +39,7 @@ def test_fresh_scrape_never_requests_divergent_old_ids(
     # Then only the new instance receives IDs at or beyond the cutoff.
     assert set(new[COL_ID]) == {"16338", "16339", "16340"}
     assert old[COL_ID].tolist() == ["16338"]
+    assert config.http_old is not None
     old_requests = [
         call.args[1]
         for call in fetch.call_args_list

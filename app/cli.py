@@ -7,7 +7,7 @@ import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Final
+from typing import Final, Literal
 
 from app.auth import CasCredentials, InstanceCookies, ManualCookies
 
@@ -26,9 +26,13 @@ class CliConfig:
     output_file: Path
     threads: int
     profile_ids: range | tuple[int, ...]
+    instances: Literal["both", "new"] = "both"
+    historical: Path | None = None
 
 
 class _Arguments(argparse.Namespace):
+    instances: Literal["both", "new"]
+    historical: Path | None
     c1: str | None
     c2: str | None
     cas: bool
@@ -81,14 +85,23 @@ def _plain_output_filename(raw: str) -> Path:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Scrape Courses profiles from two instances",
+        description="Scrape Courses profiles and preserve historical instance data",
     )
     parser.add_argument("-c1", help="New Courses instance session cookie")
     parser.add_argument("-c2", help="Old Courses instance session cookie")
     parser.add_argument(
+        "--instances",
+        choices=("both", "new"),
+        default="both",
+        help="Instances to scrape (default: both; new requires --historical)",
+    )
+    parser.add_argument(
+        "--historical", type=Path, help="Historical merged CSV for new-only mode"
+    )
+    parser.add_argument(
         "--cas",
         action="store_true",
-        help="Authenticate both instances with one CAS credential pair",
+        help="Authenticate selected instances with one CAS credential pair",
     )
     parser.add_argument("--cas-username", help="CAS username (never the password)")
     parser.add_argument(
@@ -213,7 +226,9 @@ def _resolve_manual_cookies(
                 parser,
             ),
         ),
-        old=InstanceCookies(
+        old=None
+        if arguments.instances == "new"
+        else InstanceCookies(
             moodle_session=_resolve_cookie(
                 _CookieInput(
                     explicit=arguments.c2,
@@ -246,6 +261,7 @@ def parse_cli(
             "hidden prompt"
         )
     arguments = parser.parse_args(raw_argv, namespace=_Arguments())
+    _validate_mode(arguments, parser)
     environment = os.environ if environ is None else environ
     authentication: ManualCookies | CasCredentials
     if arguments.cas:
@@ -270,4 +286,16 @@ def parse_cli(
         output_file=OUTPUT_DIRECTORY / arguments.o,
         threads=arguments.t,
         profile_ids=profile_ids,
+        instances=arguments.instances,
+        historical=arguments.historical,
     )
+
+
+def _validate_mode(arguments: _Arguments, parser: argparse.ArgumentParser) -> None:
+    if arguments.instances == "new":
+        if arguments.historical is None:
+            parser.error("--instances new requires --historical")
+        if arguments.c2 is not None:
+            parser.error("-c2 is not allowed with --instances new")
+    elif arguments.historical is not None:
+        parser.error("--historical requires --instances new")

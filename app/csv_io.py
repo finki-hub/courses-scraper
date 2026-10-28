@@ -21,10 +21,34 @@ def write_csv_atomically(df: pd.DataFrame, destination: Path) -> None:
 
     with TemporaryDirectory(
         dir=target.parent,
-        prefix=f".{destination.name}.",
+        prefix=".csv-",
     ) as temporary_directory:
-        temporary_path = Path(temporary_directory) / destination.name
-        df.to_csv(temporary_path, index=False)
+        temporary_path = Path(temporary_directory) / (
+            "data" + "".join(destination.suffixes)
+        )
+        if destination.name.lower().endswith(".zip"):
+            archive_name = (
+                destination.stem if destination.suffix == ".zip" else destination.name
+            )
+            df.to_csv(
+                temporary_path,
+                index=False,
+                compression={"method": "zip", "archive_name": archive_name},
+            )
+        elif destination.name.lower().endswith(
+            (".tar", ".tar.gz", ".tar.bz2", ".tar.xz")
+        ):
+            # Match pandas' default: only an uncompressed .tar loses its suffix.
+            archive_name = (
+                destination.stem if destination.suffix == ".tar" else destination.name
+            )
+            df.to_csv(
+                temporary_path,
+                index=False,
+                compression={"method": "tar", "archive_name": archive_name},
+            )
+        else:
+            df.to_csv(temporary_path, index=False)
         with temporary_path.open("r+b") as temporary_file:
             os.fsync(temporary_file.fileno())
         if target.exists():

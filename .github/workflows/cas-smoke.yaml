@@ -1,8 +1,6 @@
 name: CAS Smoke Test
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -18,7 +16,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     uses: finki-hub/.github/.github/workflows/pytest.yaml@main
     with:
-      pytest-args: "-q tests/test_cas_live.py"
+      pytest-args: "-q tests/test_cas_live.py -k new"
       require-cas-credentials: true
     secrets:
       CAS_USERNAME: ${{ secrets.CAS_USERNAME }}

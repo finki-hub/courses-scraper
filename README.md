@@ -1,131 +1,128 @@
 # FINKI Hub / Courses Scraper
 
-Script for scraping all profiles from FCSE Courses (both instances) into CSV format.
-
-## TL;DR
-
-1. Install `uv`
-2. Run `uv run python -m app --cas -m 17000`
-3. Enter your FINKI CAS username and password when prompted
+Export FCSE Courses profiles to CSV. Scrape both Moodle instances, or scrape only
+the new instance while preserving old-instance data from a previous export.
 
 ## Installation
 
-Python 3.13.x is required. For a reproducible install from `uv.lock`, run:
-
-`uv sync --locked`
-
-Alternatively, install the bounded runtime dependencies with pip:
-
-`python -m pip install -r requirements.txt`
-
-## Running
-
-`python -m app <arguments>`
-
-Arguments:
-
-1. `-h` - shows help message
-2. `-c1` - set `MoodleSession` cookie for the new Courses instance at `https://courses.finki.ukim.mk`
-3. `-c2` - set `MoodleSession` cookie for the old Courses instance at `https://oldcourses.finki.ukim.mk`
-4. `--cas` - authenticate both Courses instances with one FINKI CAS credential pair
-5. `--cas-username` - set the CAS username; the password is never accepted as a command-line argument
-6. `-o` - output file name (default: profiles.csv)
-7. `-t` - number of threads to use (default: 10)
-8. `-i` - profile IDs to be scraped
-9. `-m` - upper limit of profile IDs to be scraped
-
-Either `-i` or `-m` is required. Thread counts, maximum IDs, and every explicit
-profile ID must be positive. The `-o` value must be a plain filename; output is
-always written under `output/`.
-
-There are two authentication modes. CAS mode performs separate logins for the new
-and old Courses services and preserves each host's `MoodleSession` and `SRVNAME`
-cookies. The username source precedence is `--cas-username`,
-`COURSES_CAS_USERNAME`, then a terminal prompt. The password source precedence is
-`COURSES_CAS_PASSWORD`, then a hidden terminal prompt:
+Install `uv` and Python 3.13.x, then install the locked dependencies:
 
 ```text
-COURSES_CAS_USERNAME=<USERNAME>
-COURSES_CAS_PASSWORD=<PASSWORD>
+uv sync --locked
 ```
 
-Do not put the password on the command line. CAS mode does not support MFA or
-CAPTCHA challenges.
+Alternatively, install the runtime dependencies with
+`python -m pip install -r requirements.txt` and run `python -m app` instead of
+`uv run python -m app` in the examples below.
 
-Manual cookie mode remains available. For each instance, the cookie source
-precedence is:
+## Quick Start: New Instance with Historical Data
 
-1. Explicit `-c1` or `-c2` flag
-2. `COURSES_COOKIE_NEW` or `COURSES_COOKIE_OLD` environment variable
-3. Hidden terminal prompt
-
-Omit cookie flags to keep secrets out of command history. For example, set the
-environment variables before running:
+Keep a backup of your previous **combined export** outside `output/`, then run:
 
 ```text
-COURSES_COOKIE_NEW=<NEW_COOKIE>
-COURSES_COOKIE_OLD=<OLD_COOKIE>
+uv run python -m app --instances new --historical "D:/backups/profiles-historical.csv" --cas -m 18000
 ```
 
-If neither the corresponding flag nor environment variable is present, the
-script prompts without echoing the cookie. Cookie values must be nonblank and
-cannot contain control characters, whitespace, semicolons, or commas.
+Enter your FINKI CAS username and password when prompted. This example requests
+new-instance IDs 1 through 18000; choose the range you need.
 
-Before scraping, each instance must return an authenticated profile without a
-redirect. During scraping, transport failures abort an instance when they exceed
-half of at least three observed outcomes. Smaller batches abort when most requests
-fail at the transport boundary. HTTP responses that contain no exportable profile
-remain ordinary empty results.
+The result is written to `output/profiles.csv`. The historical source is never
+overwritten, and the final dataset retains:
 
-Progress is checkpointed after 100 completed profiles, every 30 seconds while
-new progress is pending, and on interruption. Re-running with the same profile
-ID set resumes both instances independently. Invalid or mismatched checkpoint
-data fails closed instead of being silently discarded.
+- All historical profiles, including old-only profiles and those outside the
+  requested scrape range.
+- All old-instance fields from the historical export.
+- Fresh new-instance fields for successfully scraped profiles, plus newly found
+  profiles.
 
-CAS example:
+Fresh nonblank names and emails take precedence, with historical values as
+fallback. Courses are combined with fresh courses first, duplicates removed, and
+course counts recalculated.
 
-`python -m app --cas -m 16500`
+The historical file must have the combined export's complete schema and valid,
+unique instance IDs. Raw checkpoints cannot be used as historical exports. The
+source and output must be different files.
 
-Manual-cookie example:
+**Historical values are not necessarily current.** Previous combined exports do
+not store separate old names, emails, or course lists, so those original values
+cannot be reconstructed exactly. Historical shared values and courses are kept;
+profiles not returned by the new scrape remain in the dataset. The source path
+and content hash are logged for provenance.
 
-`python -m app -m 16500`
+## Scraping Both Instances
 
-## Live CAS Smoke Test
+When both services are available, scrape them together:
 
-GitHub Actions authenticates and preflights both Courses instances after pushes
-to `main` and on manual dispatches from `main`. The workflow expects the
-organization or repository Actions secrets `CAS_USERNAME` and `CAS_PASSWORD`,
-matching the secret names used by `finki-hub/finki-auth`.
+```text
+uv run python -m app --instances both --cas -m 18000
+```
 
-The smoke test does not scrape profiles or write output files. Runs without the
-two secrets fail before Pytest starts; ordinary test runs skip the live test.
+`both` is the default. Each selected instance must authenticate and pass a profile
+check before scraping. There is no automatic fallback if an instance is down.
+`--historical` is only accepted with `--instances new`.
 
-## Output
+## Authentication
 
-The output CSV matches migrated profiles by their shared Moodle user ID. The old
-instance is scraped only for IDs below **16339**; old IDs **16339 and above** are
-excluded because account IDs diverge after migration. The same filter applies to
-old rows loaded from existing checkpoints. New-instance IDs remain unrestricted
-within your requested range. Live comparisons found that IDs 16339–16400 belonged
-to different people across the two instances, making 16339 the first observed
-divergence. ID 16336 matched; IDs 16337–16338 were inaccessible on both instances.
+### CAS
 
-The CSV contains:
+Use `--cas` to log in to the selected instances with one credential pair.
 
-- `Name`, `Mail`, and `Courses` combined for matching migrated IDs
-- `_old` and `_new` fields for instance-specific values such as `Description_old`
-  and `Description_new`
-- `ID_old` and `ID_new` for the instance-local Moodle user IDs
-- `Profile_old` and `Profile_new` for links using the corresponding instance ID
+- Username: `--cas-username`, then `COURSES_CAS_USERNAME`, then a terminal prompt.
+- Password: `COURSES_CAS_PASSWORD`, then a hidden terminal prompt.
 
-Hidden, missing, changed, or duplicated emails do not prevent same-ID matches.
-Profiles with different IDs remain separate even if their emails match. Names and
-emails are never identity keys. New nonblank names and emails take precedence,
-with old values as fallback; courses are combined with new courses first. Moodle
-access-denied pages are skipped instead of being exported as profiles named `User`.
-Formula-like spreadsheet cells are apostrophe-prefixed in the final CSV only;
-raw checkpoint values remain unchanged. Empty runs never replace an existing
-output or delete recovery checkpoints.
+Passwords are never accepted as command-line arguments. MFA and CAPTCHA challenges
+are not supported.
+
+### Manual Cookies
+
+Omit `--cas` to supply Moodle session cookies instead. For each selected instance,
+the source precedence is:
+
+1. `-c1` for new Moodle or `-c2` for old Moodle.
+2. `COURSES_COOKIE_NEW` or `COURSES_COOKIE_OLD`.
+3. A hidden terminal prompt.
+
+Prefer environment variables or prompts to keep cookies out of command history.
+Cookies must be nonblank and contain no control characters, whitespace,
+semicolons, or commas. New-only mode needs only the new cookie and rejects `-c2`.
+
+## Arguments
+
+| Argument | Purpose |
+| --- | --- |
+| `-h` | Show help. |
+| `--instances {both,new}` | Select live instances; defaults to `both`. |
+| `--historical PATH` | Previous combined CSV; required for `--instances new`. |
+| `--cas` | Authenticate using FINKI CAS. |
+| `--cas-username USERNAME` | Set the CAS username. |
+| `-c1 COOKIE`, `-c2 COOKIE` | Supply new- and old-instance cookies. |
+| `-m MAX_ID` | Request IDs from 1 through this maximum, inclusive. |
+| `-i ID [ID ...]` | Request specific profile IDs instead of a range. |
+| `-t THREADS` | Worker count; defaults to 10 per selected instance. |
+| `-o FILENAME` | Output filename under `output/`; defaults to `profiles.csv`. |
+
+Choose exactly one of `-m` or `-i`. IDs and thread counts must be positive.
+`-o` must be a plain filename, not a path.
+
+## Output and Recovery
+
+Profiles are matched by Moodle user ID, never by names or email addresses. Old
+IDs **16339 and above** are excluded because account IDs diverge after migration.
+
+The combined CSV includes shared `Name`, `Mail`, `Courses`, and `Courses Count`
+columns, instance-specific fields ending in `_old` and `_new`, and each instance's
+ID and profile link. Formula-like spreadsheet cells are escaped in the final
+export; raw checkpoints retain their original values.
+
+Progress is checkpointed periodically and on interruption. Resume with the same
+requested ID set. New-only checkpoints are isolated under
+`output/.checkpoints-new-only/<snapshot-content-hash>/`; use the same historical
+snapshot contents to resume. They do not replace or clear two-instance checkpoints
+or mark historical profiles as freshly scraped.
+
+Invalid checkpoints fail rather than being silently ignored. Failed or empty
+scrapes preserve the previous output and recovery checkpoints. Checkpoints are
+cleared only after a successful final export.
 
 ## License
 

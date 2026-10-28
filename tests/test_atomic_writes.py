@@ -1,7 +1,9 @@
 import os
 import stat
+import tarfile
 from pathlib import Path
 from unittest.mock import Mock
+from zipfile import ZipFile
 
 import pandas as pd
 import pytest
@@ -87,3 +89,82 @@ def test_atomic_csv_write_fsyncs_temporary_file(
     write_csv_atomically(pd.DataFrame({"ID": [1]}), tmp_path / "profiles.csv")
 
     assert fsync.call_count >= 1
+
+
+@pytest.mark.parametrize(
+    "basename",
+    [
+        "checkpoint_new_" + "a" * 100 + ".csv.gz",
+        "checkpoint_new_" + "a" * 64 + "." + "b" * 32 + ".csv",
+    ],
+)
+def test_atomic_csv_temporary_path_does_not_repeat_long_basename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, basename: str
+) -> None:
+    destination = tmp_path / basename
+    suffixes = "".join(destination.suffixes)
+    temporary_paths: list[Path] = []
+    replace = Path.replace
+
+    def capture_replace(source: Path, target: str | Path) -> Path:
+        temporary_paths.append(source)
+        assert source.parent.parent == destination.parent
+        assert source.parent.name.startswith(".csv-")
+        assert source.name == "data" + suffixes
+        assert len(str(source)) <= len(str(destination.parent)) + len(suffixes) + 25
+        return replace(source, target)
+
+    monkeypatch.setattr(Path, "replace", capture_replace)
+    write_csv_atomically(pd.DataFrame({"ID": [1, 2]}), destination)
+    assert len(temporary_paths) == 1
+    assert pd.read_csv(destination)["ID"].tolist() == [1, 2]
+    assert set(tmp_path.iterdir()) == {destination}
+
+
+@pytest.mark.parametrize(
+    ("basename", "member"),
+    [
+        ("profiles.csv.zip", "profiles.csv"),
+        ("profiles.zip", "profiles"),
+        ("profiles.csv.ZIP", "profiles.csv.ZIP"),
+    ],
+)
+def test_atomic_csv_zip_member_name(tmp_path: Path, basename: str, member: str) -> None:
+    destination = tmp_path / basename
+    frame = pd.DataFrame({"ID": [1, 2]})
+
+    write_csv_atomically(frame, destination)
+
+    with ZipFile(destination) as archive:
+        assert archive.namelist() == [member]
+        with archive.open(member) as csv_file:
+            pd.testing.assert_frame_equal(pd.read_csv(csv_file), frame)
+    pd.testing.assert_frame_equal(pd.read_csv(destination), frame)
+    assert set(tmp_path.iterdir()) == {destination}
+
+
+@pytest.mark.parametrize(
+    ("basename", "member"),
+    [
+        ("profiles.csv.tar", "profiles.csv"),
+        ("profiles.tar", "profiles"),
+        ("profiles.csv.tar.gz", "profiles.csv.tar.gz"),
+        ("profiles.csv.tar.bz2", "profiles.csv.tar.bz2"),
+        ("profiles.csv.tar.xz", "profiles.csv.tar.xz"),
+        ("profiles.csv.TAR", "profiles.csv.TAR"),
+    ],
+)
+def test_atomic_csv_tar_member_name(tmp_path: Path, basename: str, member: str) -> None:
+    destination = tmp_path / basename
+    frame = pd.DataFrame({"ID": [1, 2]})
+
+    write_csv_atomically(frame, destination)
+
+    with tarfile.open(destination) as archive:
+        assert archive.getnames() == [member]
+        csv_file = archive.extractfile(member)
+        assert csv_file is not None
+        with csv_file:
+            pd.testing.assert_frame_equal(pd.read_csv(csv_file), frame)
+    pd.testing.assert_frame_equal(pd.read_csv(destination), frame)
+    assert set(tmp_path.iterdir()) == {destination}
