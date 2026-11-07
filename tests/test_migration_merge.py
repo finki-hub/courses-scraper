@@ -46,7 +46,8 @@ def test_migrated_id_matches_independently_of_email(
 
     # Then the ID identifies one account and preserves both course histories.
     assert len(merged) == 1
-    assert merged.loc[0, "ID_old"] == merged.loc[0, "ID_new"] == "42"
+    assert merged.loc[0, "ID_old"] == "42"
+    assert merged.loc[0, "ID_new"] == "42"
     assert merged.loc[0, COL_MAIL] == (new_mail or old_mail)
     assert merged.loc[0, COL_COURSES] == "Current course\nArchived course"
 
