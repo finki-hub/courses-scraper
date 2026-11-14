@@ -135,9 +135,10 @@ def test_refuses_an_export_that_lost_profiles(
     tmp_path: Path, rows: list[dict[str, str]]
 ) -> None:
     directus = _seeded()
+    scrape = _scraper(rows)
 
     with pytest.raises(SyncError, match="lost 1 historical"):
-        run_sync(CONFIG, directus, _scraper(rows), tmp_path, _now)
+        run_sync(CONFIG, directus, scrape, tmp_path, _now)
 
     assert directus.imported == []
     assert list(directus.files) == ["seed"]
@@ -157,8 +158,11 @@ def test_refuses_a_malformed_export(tmp_path: Path) -> None:
 
 
 def test_requires_a_seed_export(tmp_path: Path) -> None:
+    directus = FakeDirectus()
+    scrape = _scraper(HISTORY)
+
     with pytest.raises(SyncError, match="seed"):
-        run_sync(CONFIG, FakeDirectus(), _scraper(HISTORY), tmp_path, _now)
+        run_sync(CONFIG, directus, scrape, tmp_path, _now)
 
 
 def test_scraper_failure_stops_before_upload(tmp_path: Path) -> None:

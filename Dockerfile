@@ -8,7 +8,7 @@ WORKDIR /app
 
 COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-install-project --no-dev
+    uv sync --locked --no-install-project --no-dev --no-build
 
 COPY app ./app
 
@@ -19,9 +19,14 @@ ENV APP_REVISION=${APP_REVISION} \
     PATH="/app/.venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1
 
+RUN useradd --system --uid 10001 --home-dir /app scraper
+
 WORKDIR /app
 
 COPY --from=builder /app /app
+RUN mkdir /app/output && chown scraper /app/output
+
+USER scraper
 
 # Checkpoints and in-flight CSVs; mount a volume to resume an interrupted run.
 VOLUME ["/app/output"]

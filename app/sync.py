@@ -351,20 +351,28 @@ def _refresh(
     return summary
 
 
+def _sync() -> str | None:
+    """Run the refresh; the bounded reason it failed, or None."""
+    try:
+        config = SyncConfig.from_env(os.environ)
+        run_sync(config, DirectusClient(config))
+    except (SyncError, HistoricalDataError) as error:
+        return str(error)
+    except requests.RequestException as error:
+        # The type only: a request error may quote a URL or a response.
+        return type(error).__name__
+    return None
+
+
 def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
-    try:
-        config = SyncConfig.from_env(os.environ)
-        run_sync(config, DirectusClient(config))
-    except (SyncError, HistoricalDataError) as error:
-        logger.error("Sync failed: %s", error)  # noqa: TRY400
-        raise SystemExit(1) from None
-    except requests.RequestException as error:
-        logger.error("Sync failed: %s", type(error).__name__)  # noqa: TRY400
-        raise SystemExit(1) from None
+    failure = _sync()
+    if failure is not None:
+        logger.error("Sync failed: %s", failure)
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
