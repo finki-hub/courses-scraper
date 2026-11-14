@@ -6,12 +6,14 @@ from typing import Any
 
 import pandas as pd
 import pytest
+from requests.adapters import HTTPAdapter
 
 from app.historical import HistoricalDataError
 from app.profile_merge import MERGED_COLUMNS
 from app.sync import (
     BACKUP_PREFIX,
     EXPORT_PREFIX,
+    DirectusClient,
     RemoteFile,
     Scrape,
     SyncConfig,
@@ -199,3 +201,17 @@ def test_config_from_env() -> None:
                 "SYNC_KEEP": "0",
             },
         )
+
+
+def test_client_waits_out_a_directus_restart() -> None:
+    client = DirectusClient(CONFIG)
+    adapter = client._session.get_adapter(f"{CONFIG.url}/files")
+    assert isinstance(adapter, HTTPAdapter)
+    retry = adapter.max_retries
+
+    assert retry.connect == 8
+    assert retry.status_forcelist is not None
+    assert 503 in retry.status_forcelist
+    # Never resend an upload or an import after the request went out.
+    assert retry.allowed_methods is not None
+    assert "POST" not in retry.allowed_methods
