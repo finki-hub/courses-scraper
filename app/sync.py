@@ -24,6 +24,8 @@ from pathlib import Path
 from typing import Any, Final, Protocol
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from app.cli import OUTPUT_DIRECTORY
 from app.historical import (
@@ -55,6 +57,22 @@ _REQUEST_TIMEOUT: Final = 120.0
 # The import is synchronous and bounded by Directus' IMPORT_TIMEOUT.
 _IMPORT_TIMEOUT: Final = 3600.0
 _CHUNK: Final = 1 << 20
+
+# Directus restarts when Watchtower deploys a new image: wait it out (about
+# four minutes in all) instead of failing. A refused connection is retried
+# for every method, since nothing was sent; a 502/503/504 or a read error
+# only for the idempotent reads and deletes, never for an upload or import.
+_RETRY: Final = Retry(
+    total=8,
+    connect=8,
+    read=3,
+    status=8,
+    backoff_factor=2,
+    backoff_max=60,
+    status_forcelist=(502, 503, 504),
+    allowed_methods=frozenset({"GET", "DELETE"}),
+    raise_on_status=False,
+)
 
 
 class SyncError(Exception):
@@ -122,6 +140,7 @@ class DirectusClient:
         self._url = config.url
         self._session = requests.Session()
         self._session.headers["Authorization"] = f"Bearer {config.token}"
+        self._session.mount(config.url, HTTPAdapter(max_retries=_RETRY))
 
     def _check(self, response: requests.Response, action: str) -> None:
         if response.ok:
