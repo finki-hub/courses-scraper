@@ -206,7 +206,7 @@ def _errors(response: requests.Response) -> str:
             f"{error.get('extensions', {}).get('code', '')} {error.get('message', '')}"
             for error in errors
         )
-    except (ValueError, AttributeError):
+    except ValueError, AttributeError:
         text = ""
     return text.strip()[:500]
 

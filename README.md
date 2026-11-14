@@ -5,7 +5,7 @@ the new instance while preserving old-instance data from a previous export.
 
 ## Installation
 
-Install `uv` and Python 3.13.x, then install the locked dependencies:
+Install `uv` and Python 3.15.x, then install the locked dependencies:
 
 ```text
 uv sync --locked

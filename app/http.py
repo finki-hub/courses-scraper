@@ -247,7 +247,7 @@ def fetch_profile(
             reason=ProfileFailureReason.LOGIN_RESPONSE,
             status_code=response.status_code,
         ) from error
-    except (AttributeError, KeyError, TypeError):
+    except AttributeError, KeyError, TypeError:
         return ProfileEmpty(
             profile_id=profile_id,
             reason=EmptyReason.PARSE_ERROR,
