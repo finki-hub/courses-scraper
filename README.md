@@ -5,7 +5,7 @@ the new instance while preserving old-instance data from a previous export.
 
 ## Installation
 
-Install `uv` and Python 3.13.x, then install the locked dependencies:
+Install `uv` and Python 3.15.x, then install the locked dependencies:
 
 ```text
 uv sync --locked
@@ -123,6 +123,37 @@ or mark historical profiles as freshly scraped.
 Invalid checkpoints fail rather than being silently ignored. Failed or empty
 scrapes preserve the previous output and recovery checkpoints. Checkpoints are
 cleared only after a successful final export.
+
+## Unattended FINKI Hub Data Refresh
+
+`python -m app.sync` refreshes the Moodle snapshot of
+[FINKI Hub data](https://github.com/finki-hub/data) (Directus) without
+prompts:
+
+1. Downloads the newest `profiles-*.csv` from the private
+   **Moodle snapshots (private)** folder as the historical export.
+2. Scrapes the new instance only, up to the highest known new-instance ID
+   plus a margin.
+3. Refuses the result if any historical profile is missing.
+4. Uploads it to the same folder and runs **Data / Import Moodle snapshot**,
+   which backs up and replaces the active snapshot.
+5. Keeps only the newest exports and import backups in the folder.
+
+| Variable | Purpose |
+| --- | --- |
+| `FINKI_HUB_DATA_URL` | Directus URL, e.g. `http://directus:8055`. |
+| `FINKI_HUB_DATA_TOKEN` | Static token of an admin user (the import accepts only admins). |
+| `COURSES_CAS_USERNAME`, `COURSES_CAS_PASSWORD` | CAS credentials. |
+| `SYNC_ID_MARGIN` | IDs requested beyond the highest known one; defaults to 2000. |
+| `SYNC_KEEP` | Exports and backups kept in the folder; defaults to 8. |
+| `SYNC_THREADS` | Worker count; defaults to 10. |
+
+The Docker image `ghcr.io/finki-hub/courses-scraper` runs it by default;
+mount a volume at `/app/output` so an interrupted scrape resumes. The
+`finki-hub` host runs it weekly from the `moodle-sync` service of the data
+repository's `compose.prod.yaml`. Seed the folder once with a combined export
+named `profiles-<anything>.csv`. Logs carry counts and file IDs, never profile
+contents.
 
 ## License
 

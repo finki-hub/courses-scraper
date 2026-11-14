@@ -96,7 +96,7 @@ def load_historical_snapshot(path: Path) -> HistoricalSnapshot:
         _normalize_ids(rows)
         frame = pd.DataFrame(rows, columns=list(MERGED_COLUMNS), dtype=str)
         return HistoricalSnapshot(frame, resolved, hashlib.sha256(raw).hexdigest())
-    except (OSError, csv.Error, ValueError):
+    except OSError, csv.Error, ValueError:
         raise HistoricalDataError from None
 
 
