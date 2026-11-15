@@ -10,6 +10,7 @@ import pandas as pd
 
 from app.auth import (
     CasAuthenticationError,
+    CasAuthenticationFailure,
     CasCredentials,
     InstanceCookies,
     ManualCookies,
@@ -26,6 +27,8 @@ from app.checkpoints import save as save_checkpoint
 from app.cli import CliConfig, parse_cli
 from app.constants import (
     COL_ID,
+    EXIT_REFUSED,
+    EXIT_TEMPORARY,
     FIRST_UNMIGRATED_OLD_ID,
     base_urls,
     selectors_new,
@@ -277,7 +280,10 @@ def _authenticate(
                     "CAS authentication failed",
                     exc_info=(RuntimeError, safe_error, None),
                 )
-                raise SystemExit(2) from error
+                temporary = error.reason is CasAuthenticationFailure.REQUEST
+                raise SystemExit(
+                    EXIT_TEMPORARY if temporary else EXIT_REFUSED
+                ) from error
             verify_all_instances = True
         case unreachable:
             assert_never(unreachable)

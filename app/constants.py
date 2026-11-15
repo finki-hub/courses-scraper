@@ -26,6 +26,12 @@ COURSES_COUNT = "Courses Count"
 
 FIRST_UNMIGRATED_OLD_ID: Final = 16339
 
+# The scraper's exit codes for a run that never started: CAS refused the
+# login or the arguments were wrong (permanent), or CAS could not be reached
+# (temporary, EX_TEMPFAIL; worth retrying later).
+EXIT_REFUSED: Final = 2
+EXIT_TEMPORARY: Final = 75
+
 
 class _BaseSelectors(TypedDict):
     name_selector: str
