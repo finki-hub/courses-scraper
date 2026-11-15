@@ -70,9 +70,18 @@ def test_main_authenticates_cas_credentials_for_each_instance(
     preflight.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("reason", "exit_code"),
+    [
+        (CasAuthenticationFailure.MISSING_COOKIES, 2),
+        (CasAuthenticationFailure.REQUEST, 75),
+    ],
+)
 def test_main_stops_before_output_when_cas_authentication_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    reason: CasAuthenticationFailure,
+    exit_code: int,
 ) -> None:
     monkeypatch.chdir(tmp_path)
     credentials = CasCredentials(username="student", password=CREDENTIAL_VALUE)
@@ -94,7 +103,7 @@ def test_main_stops_before_output_when_cas_authentication_fails(
         Mock(
             side_effect=CasAuthenticationError(
                 service_url="https://courses.finki.ukim.mk/login/index.php",
-                reason=CasAuthenticationFailure.MISSING_COOKIES,
+                reason=reason,
                 missing_cookies=("MoodleSession", "SRVNAME"),
             ),
         ),
@@ -105,7 +114,7 @@ def test_main_stops_before_output_when_cas_authentication_fails(
     with pytest.raises(SystemExit) as caught:
         scraper.main()
 
-    assert caught.value.code == 2
+    assert caught.value.code == exit_code
     assert not (tmp_path / "output").exists()
     scrape.assert_not_called()
 

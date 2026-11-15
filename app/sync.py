@@ -31,6 +31,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from app.cli import OUTPUT_DIRECTORY
+from app.constants import EXIT_REFUSED
 from app.historical import (
     HistoricalDataError,
     HistoricalSnapshot,
@@ -39,6 +40,7 @@ from app.historical import (
 
 __all__ = [
     "Clock",
+    "ScrapeError",
     "SyncConfig",
     "SyncError",
     "main",
@@ -83,6 +85,16 @@ class SyncError(Exception):
     """A step failed; the message never contains profile data."""
 
 
+class ScrapeError(SyncError):
+    """The scraper exited with an error; ``retryable`` unless CAS refused
+    the login or the arguments were wrong, which a retry cannot fix (and a
+    repeated refused login could lock the account)."""
+
+    def __init__(self, returncode: int) -> None:
+        super().__init__(f"Scraper exited with code {returncode}")
+        self.retryable = returncode != EXIT_REFUSED
+
+
 @dataclass(frozen=True, slots=True)
 class SyncConfig:
     url: str
@@ -106,20 +118,23 @@ class SyncConfig:
             keep=_positive(env, "SYNC_KEEP", 8),
             threads=_positive(env, "SYNC_THREADS", 10),
             attempts=_positive(env, "SYNC_ATTEMPTS", 3),
-            retry_delay=_positive(env, "SYNC_RETRY_DELAY", 900),
+            retry_delay=_positive(env, "SYNC_RETRY_DELAY", 900, minimum=0),
         )
 
 
-def _positive(env: Mapping[str, str], name: str, default: int) -> int:
+def _positive(
+    env: Mapping[str, str], name: str, default: int, *, minimum: int = 1
+) -> int:
     raw = env.get(name, "").strip()
     if not raw:
         return default
+    kind = "a positive" if minimum == 1 else "a non-negative"
     try:
         value = int(raw)
     except ValueError:
-        raise SyncError(f"{name} must be a positive integer") from None
-    if value <= 0:
-        raise SyncError(f"{name} must be a positive integer")
+        raise SyncError(f"{name} must be {kind} integer") from None
+    if value < minimum:
+        raise SyncError(f"{name} must be {kind} integer")
     return value
 
 
@@ -263,7 +278,7 @@ def scrape_new_instance(
     ]
     completed = subprocess.run(command, check=False)  # noqa: S603
     if completed.returncode != 0:
-        raise SyncError(f"Scraper exited with code {completed.returncode}")
+        raise ScrapeError(completed.returncode)
 
 
 def _ids(snapshot: HistoricalSnapshot, column: str) -> set[str]:
@@ -353,12 +368,12 @@ class _Run:
 
 
 def _scrape(config: SyncConfig, scrape: Scrape, run: _Run, max_id: int) -> None:
-    """Scrape, retrying a failed attempt after ``retry_delay`` seconds."""
+    """Scrape, retrying a retryable failure after ``retry_delay`` seconds."""
     for attempt in range(1, config.attempts + 1):
         try:
             scrape(run.historical, max_id, run.output, config.threads)
-        except SyncError as error:
-            if attempt == config.attempts:
+        except ScrapeError as error:
+            if not error.retryable or attempt == config.attempts:
                 raise
             logger.warning(
                 "Scrape attempt %d of %d failed (%s); retrying in %d s",

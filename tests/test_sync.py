@@ -17,6 +17,7 @@ from app.sync import (
     DirectusClient,
     RemoteFile,
     Scrape,
+    ScrapeError,
     SyncConfig,
     SyncError,
     run_sync,
@@ -176,9 +177,9 @@ def test_scraper_failure_stops_before_upload(tmp_path: Path) -> None:
 
     def scrape(historical: Path, max_id: int, output: Path, threads: int) -> None:
         del historical, max_id, output, threads
-        raise SyncError("Scraper exited with code 2")
+        raise ScrapeError(75)
 
-    with pytest.raises(SyncError, match="code 2"):
+    with pytest.raises(SyncError, match="code 75"):
         run_sync(
             CONFIG, directus, scrape, tmp_path, Clock(now=_now, sleep=pauses.append)
         )
@@ -195,7 +196,7 @@ def test_retries_a_failed_scrape_and_imports(tmp_path: Path) -> None:
     def scrape(historical: Path, max_id: int, output: Path, threads: int) -> None:
         attempts.append(max_id)
         if len(attempts) == 1:
-            raise SyncError("Scraper exited with code 2")
+            raise ScrapeError(75)
         refreshed(historical, max_id, output, threads)
 
     summary = run_sync(
@@ -219,6 +220,14 @@ def test_config_from_env() -> None:
     assert config.id_margin == 100
     assert config.keep == 8
     assert (config.attempts, config.retry_delay) == (3, 900)
+    no_pause = SyncConfig.from_env(
+        {
+            "FINKI_HUB_DATA_URL": "http://directus:8055",
+            "FINKI_HUB_DATA_TOKEN": "token",
+            "SYNC_RETRY_DELAY": "0",
+        },
+    )
+    assert no_pause.retry_delay == 0
 
     with pytest.raises(SyncError, match="required"):
         SyncConfig.from_env({"FINKI_HUB_DATA_URL": "http://directus:8055"})
@@ -244,3 +253,21 @@ def test_client_waits_out_a_directus_restart() -> None:
     # Never resend an upload or an import after the request went out.
     assert retry.allowed_methods is not None
     assert "POST" not in retry.allowed_methods
+
+
+def test_never_retries_a_refused_login(tmp_path: Path) -> None:
+    directus = _seeded()
+    pauses: list[float] = []
+    attempts: list[int] = []
+
+    def scrape(historical: Path, max_id: int, output: Path, threads: int) -> None:
+        del historical, output, threads
+        attempts.append(max_id)
+        raise ScrapeError(2)
+
+    with pytest.raises(ScrapeError, match="code 2"):
+        run_sync(
+            CONFIG, directus, scrape, tmp_path, Clock(now=_now, sleep=pauses.append)
+        )
+    assert attempts == [80]
+    assert pauses == []
