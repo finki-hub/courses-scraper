@@ -2,7 +2,9 @@
 
 1. Download the newest ``profiles-*.csv`` from the private "Moodle snapshots"
    folder as the historical export.
-2. Scrape the new instance only, up to the highest known ID plus a margin.
+2. Scrape the new instance only, up to the highest known ID plus a margin;
+   a failed scrape (CAS or Moodle briefly unreachable) is retried after a
+   pause and resumes from its checkpoints.
 3. Check that the result still holds every historical profile.
 4. Upload it to the same folder and run the "Data / Import Moodle snapshot"
    Flow, which backs up and replaces the active snapshot.
@@ -17,6 +19,7 @@ import logging
 import os
 import subprocess
 import sys
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -35,6 +38,7 @@ from app.historical import (
 )
 
 __all__ = [
+    "Clock",
     "SyncConfig",
     "SyncError",
     "main",
@@ -86,6 +90,8 @@ class SyncConfig:
     id_margin: int = 2000
     keep: int = 8
     threads: int = 10
+    attempts: int = 3
+    retry_delay: int = 900
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> SyncConfig:
@@ -99,6 +105,8 @@ class SyncConfig:
             id_margin=_positive(env, "SYNC_ID_MARGIN", 2000),
             keep=_positive(env, "SYNC_KEEP", 8),
             threads=_positive(env, "SYNC_THREADS", 10),
+            attempts=_positive(env, "SYNC_ATTEMPTS", 3),
+            retry_delay=_positive(env, "SYNC_RETRY_DELAY", 900),
         )
 
 
@@ -293,13 +301,26 @@ def _stale(
     return [file.id for file in files if file.id not in kept]
 
 
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+@dataclass(frozen=True, slots=True)
+class Clock:
+    """The time source of a run and how it waits between scrape attempts."""
+
+    now: Callable[[], datetime] = _utc_now
+    sleep: Callable[[float], None] = time.sleep
+
+
 def run_sync(
     config: SyncConfig,
     directus: Directus,
     scrape: Scrape = scrape_new_instance,
     work: Path = OUTPUT_DIRECTORY,
-    now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    clock: Clock | None = None,
 ) -> Mapping[str, Any]:
+    clock = clock or Clock()
     work.mkdir(parents=True, exist_ok=True)
     exports = directus.list_files(EXPORT_PREFIX)
     if not exports:
@@ -309,9 +330,14 @@ def run_sync(
         )
     source = exports[0]
     historical_path = work / HISTORICAL_FILE
-    output = work / f"{EXPORT_PREFIX}{now():%Y%m%dT%H%M%SZ}.csv"
+    output = work / f"{EXPORT_PREFIX}{clock.now():%Y%m%dT%H%M%SZ}.csv"
     try:
-        return _refresh(config, directus, scrape, _Run(source, historical_path, output))
+        return _refresh(
+            config,
+            directus,
+            scrape,
+            _Run(source, historical_path, output, clock.sleep),
+        )
     finally:
         # Profile data lives in Directus; only resumable checkpoints stay.
         historical_path.unlink(missing_ok=True)
@@ -323,6 +349,27 @@ class _Run:
     source: RemoteFile
     historical: Path
     output: Path
+    sleep: Callable[[float], None]
+
+
+def _scrape(config: SyncConfig, scrape: Scrape, run: _Run, max_id: int) -> None:
+    """Scrape, retrying a failed attempt after ``retry_delay`` seconds."""
+    for attempt in range(1, config.attempts + 1):
+        try:
+            scrape(run.historical, max_id, run.output, config.threads)
+        except SyncError as error:
+            if attempt == config.attempts:
+                raise
+            logger.warning(
+                "Scrape attempt %d of %d failed (%s); retrying in %d s",
+                attempt,
+                config.attempts,
+                error,
+                config.retry_delay,
+            )
+            run.sleep(config.retry_delay)
+        else:
+            return
 
 
 def _refresh(
@@ -342,7 +389,7 @@ def _refresh(
     )
 
     filename = run.output.name
-    scrape(run.historical, max_id, run.output, config.threads)
+    _scrape(config, scrape, run, max_id)
     export = load_historical_snapshot(run.output)
     check_export(historical, export)
     logger.info(

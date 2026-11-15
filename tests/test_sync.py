@@ -13,6 +13,7 @@ from app.profile_merge import MERGED_COLUMNS
 from app.sync import (
     BACKUP_PREFIX,
     EXPORT_PREFIX,
+    Clock,
     DirectusClient,
     RemoteFile,
     Scrape,
@@ -101,7 +102,9 @@ def test_refreshes_imports_and_prunes(tmp_path: Path) -> None:
     calls: list[int] = []
     refreshed = [*HISTORY, _row("", "31", "D")]
 
-    summary = run_sync(CONFIG, directus, _scraper(refreshed, calls), tmp_path, _now)
+    summary = run_sync(
+        CONFIG, directus, _scraper(refreshed, calls), tmp_path, Clock(now=_now)
+    )
 
     assert summary == {"rows": 4}
     assert calls == [80]
@@ -117,7 +120,7 @@ def test_keeps_the_new_export_beyond_the_limit(tmp_path: Path) -> None:
     directus.files["later"] = (f"{EXPORT_PREFIX}later.csv", _csv(HISTORY))
     directus.files["latest"] = (f"{EXPORT_PREFIX}latest.csv", _csv(HISTORY))
 
-    run_sync(CONFIG, directus, _scraper(HISTORY), tmp_path, _now)
+    run_sync(CONFIG, directus, _scraper(HISTORY), tmp_path, Clock(now=_now))
 
     names = [file.filename for file in directus.list_files(EXPORT_PREFIX)]
     assert names == [
@@ -140,7 +143,7 @@ def test_refuses_an_export_that_lost_profiles(
     scrape = _scraper(rows)
 
     with pytest.raises(SyncError, match="lost 1 historical"):
-        run_sync(CONFIG, directus, scrape, tmp_path, _now)
+        run_sync(CONFIG, directus, scrape, tmp_path, Clock(now=_now))
 
     assert directus.imported == []
     assert list(directus.files) == ["seed"]
@@ -155,7 +158,7 @@ def test_refuses_a_malformed_export(tmp_path: Path) -> None:
         output.write_text("Name\nA\n", encoding="utf-8")
 
     with pytest.raises(HistoricalDataError):
-        run_sync(CONFIG, directus, scrape, tmp_path, _now)
+        run_sync(CONFIG, directus, scrape, tmp_path, Clock(now=_now))
     assert directus.imported == []
 
 
@@ -164,19 +167,44 @@ def test_requires_a_seed_export(tmp_path: Path) -> None:
     scrape = _scraper(HISTORY)
 
     with pytest.raises(SyncError, match="seed"):
-        run_sync(CONFIG, directus, scrape, tmp_path, _now)
+        run_sync(CONFIG, directus, scrape, tmp_path, Clock(now=_now))
 
 
 def test_scraper_failure_stops_before_upload(tmp_path: Path) -> None:
     directus = _seeded()
+    pauses: list[float] = []
 
     def scrape(historical: Path, max_id: int, output: Path, threads: int) -> None:
         del historical, max_id, output, threads
         raise SyncError("Scraper exited with code 2")
 
     with pytest.raises(SyncError, match="code 2"):
-        run_sync(CONFIG, directus, scrape, tmp_path, _now)
+        run_sync(
+            CONFIG, directus, scrape, tmp_path, Clock(now=_now, sleep=pauses.append)
+        )
+    assert pauses == [CONFIG.retry_delay] * (CONFIG.attempts - 1)
     assert list(directus.files) == ["seed"]
+
+
+def test_retries_a_failed_scrape_and_imports(tmp_path: Path) -> None:
+    directus = _seeded()
+    pauses: list[float] = []
+    attempts: list[int] = []
+    refreshed = _scraper([*HISTORY, _row("", "31", "D")])
+
+    def scrape(historical: Path, max_id: int, output: Path, threads: int) -> None:
+        attempts.append(max_id)
+        if len(attempts) == 1:
+            raise SyncError("Scraper exited with code 2")
+        refreshed(historical, max_id, output, threads)
+
+    summary = run_sync(
+        CONFIG, directus, scrape, tmp_path, Clock(now=_now, sleep=pauses.append)
+    )
+
+    assert summary == {"rows": 4}
+    assert attempts == [80, 80]
+    assert pauses == [CONFIG.retry_delay]
 
 
 def test_config_from_env() -> None:
@@ -190,6 +218,7 @@ def test_config_from_env() -> None:
     assert config.url == "http://directus:8055"
     assert config.id_margin == 100
     assert config.keep == 8
+    assert (config.attempts, config.retry_delay) == (3, 900)
 
     with pytest.raises(SyncError, match="required"):
         SyncConfig.from_env({"FINKI_HUB_DATA_URL": "http://directus:8055"})

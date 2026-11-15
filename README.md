@@ -147,6 +147,8 @@ prompts:
 | `SYNC_ID_MARGIN` | IDs requested beyond the highest known one; defaults to 2000. |
 | `SYNC_KEEP` | Exports and backups kept in the folder; defaults to 8. |
 | `SYNC_THREADS` | Worker count; defaults to 10. |
+| `SYNC_ATTEMPTS` | Scrape attempts before the run fails (a retry resumes from the checkpoints); defaults to 3. |
+| `SYNC_RETRY_DELAY` | Seconds between scrape attempts; defaults to 900. |
 
 The Docker image `ghcr.io/finki-hub/courses-scraper` runs it by default;
 mount a volume at `/app/output` so an interrupted scrape resumes. The
